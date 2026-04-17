@@ -1,0 +1,44 @@
+# Claude Code runtime state (never share)
+.claude/teams/
+.claude/tasks/
+.claude/projects/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Model checkpoints (large files)
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# Datasets (download locally)
+data/raw/
+data/VOCdevkit/
+data/coco/
+
+# WandB local cache
+wandb/
+
+# Project 1 submission artifacts
+p1/submit/img/
+p1/submit/pred/*.png
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# uv
+.python-version

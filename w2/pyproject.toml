@@ -1,0 +1,17 @@
+[project]
+name = "Lab02"
+version = "0.1.0"
+description = "Open Source AI Practice - Lab02"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.3",
+    "torch>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "ruff>=0.15.5",
+]
