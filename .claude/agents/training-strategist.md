@@ -52,13 +52,23 @@ torch.save(checkpoint, "last.pth")
 Resume 절차:
 
 ```python
+import random
+import numpy as np
+import torch
+import wandb
+
 ckpt = torch.load("last.pth", map_location="cuda")
 model.load_state_dict(ckpt["model"])
 optimizer.load_state_dict(ckpt["optimizer"])
 scheduler.load_state_dict(ckpt["scheduler"])
 scaler.load_state_dict(ckpt["scaler"])
+
+# RNG state 전체 복원
 torch.set_rng_state(ckpt["rng_state"]["torch"])
-# ... RNG 전부 복원
+torch.cuda.set_rng_state_all(ckpt["rng_state"]["cuda"])
+np.random.set_state(ckpt["rng_state"]["numpy"])
+random.setstate(ckpt["rng_state"]["python"])
+
 start_epoch = ckpt["epoch"] + 1
 
 # WandB 같은 run에 계속 기록
@@ -93,14 +103,16 @@ wandb.init(id=ckpt["wandb_run_id"], resume="must")
 
 ### Mixed Precision (T4 호환)
 
-```python
-from torch.cuda.amp import GradScaler, autocast
+PyTorch 2.3+에서는 `torch.cuda.amp`가 deprecated되고 `torch.amp`가 권장 API입니다:
 
-scaler = GradScaler()
+```python
+from torch.amp import GradScaler, autocast
+
+scaler = GradScaler("cuda")
 
 for images, masks in loader:
     optimizer.zero_grad()
-    with autocast(dtype=torch.float16):  # T4는 fp16만
+    with autocast("cuda", dtype=torch.float16):  # T4는 fp16만
         outputs = model(images)
         loss = criterion(outputs, masks)
     scaler.scale(loss).backward()
