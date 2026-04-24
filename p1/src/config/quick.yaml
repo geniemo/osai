@@ -1,0 +1,69 @@
+# Quick config: Stage 2 (VOC only) ~5K iter, ~55 epoch
+# 첫 실제 mIoU 측정용. ~30분 (5070 Ti).
+# Usage: uv run python -m src.train --config src/config/quick.yaml --stage 2
+
+seed: 42
+
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 16
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 2
+
+model:
+  backbone: resnet50
+  head: deeplabv3plus
+  num_classes: 21
+  output_stride: 16
+  pretrained: true
+  use_aux: true
+  aspp_rates: [6, 12, 18]
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  aux_weight: 0.4
+
+optimizer:
+  type: sgd
+  base_lr: 0.001
+  momentum: 0.9
+  weight_decay: 0.0005
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 200
+
+training:
+  stage1_iters: 5000
+  stage2_iters: 5000
+  stage2_base_lr: 0.001
+  stage2_warmup: 200
+  log_interval: 50
+  val_interval_stage1: 500
+  val_interval_stage2: 500
+  ckpt_interval: 1000
+  amp_dtype: fp16
+  ema_decay: 0.999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-local
+  run_name_prefix: quick
+  tags: [desktop, voc-only, quick]
+
+paths:
+  ckpt_dir: ./checkpoints/quick
+  training_state: ./checkpoints/quick/training_state.pth
+  best_ckpt: ./checkpoints/quick/best.pth
+  final_ckpt: ./checkpoints/quick/model.pth
