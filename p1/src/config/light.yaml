@@ -1,0 +1,66 @@
+# Light config: A (MobileNetV3-Large + LR-ASPP)
+
+seed: 42
+
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 24                # 더 큰 배치 가능 (light model)
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 1
+
+model:
+  backbone: mobilenet_v3_large
+  head: lraspp
+  num_classes: 21
+  output_stride: 16
+  pretrained: true
+  use_aux: false                # LR-ASPP는 aux 미사용
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  aux_weight: 0.0               # use_aux=false이므로 0
+
+optimizer:
+  type: sgd
+  base_lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 1000
+
+training:
+  stage1_iters: 80000
+  stage2_iters: 30000
+  stage2_base_lr: 0.001
+  stage2_warmup: 500
+  log_interval: 50
+  val_interval_stage1: 5000
+  val_interval_stage2: 2000
+  ckpt_interval: 5000
+  amp_dtype: fp16
+  ema_decay: 0.9999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-local
+  run_name_prefix: dev
+  tags: [desktop, voc+coco, light]
+
+paths:
+  ckpt_dir: ./checkpoints
+  training_state: ./checkpoints/training_state.pth
+  best_ckpt: ./checkpoints/best.pth
+  final_ckpt: ./checkpoints/model.pth
