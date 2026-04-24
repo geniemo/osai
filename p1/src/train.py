@@ -81,6 +81,9 @@ def main() -> None:
         aux_weight=cfg["loss"]["aux_weight"],
     )
 
+    scaler = torch.amp.GradScaler('cuda', enabled=(cfg["training"]["amp_dtype"] == "fp16"))
+    amp_dtype = torch.float16 if cfg["training"]["amp_dtype"] == "fp16" else torch.bfloat16
+
     iter_count = 0
     data_iter = iter(train_loader)
     model.train()
@@ -93,12 +96,15 @@ def main() -> None:
             img, mask = next(data_iter)
         img = img.to(device, non_blocking=True); mask = mask.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-        out = model(img)
-        main_logits, aux_logits = (out if isinstance(out, tuple) else (out, None))
-        loss = criterion(main_logits, aux_logits, mask)
-        loss.backward()
+        with torch.amp.autocast('cuda', dtype=amp_dtype):
+            out = model(img)
+            main_logits, aux_logits = (out if isinstance(out, tuple) else (out, None))
+            loss = criterion(main_logits, aux_logits, mask)
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg["training"]["grad_clip"])
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         iter_count += 1
         if iter_count % log_interval == 0:
