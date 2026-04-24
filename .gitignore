@@ -10,8 +10,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 
-# Model checkpoints (large files)
-checkpoints/
+# Model checkpoints (large files; allow dirs with .gitkeep)
 *.pth
 *.pt
 *.ckpt
