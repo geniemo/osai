@@ -39,7 +39,8 @@ S = S_mIoU × S_FLOPs + S_Code + S_Report
 
 - **허용**: PyTorch, TorchVision, OpenCV, Pillow, Scikit-Image, Matplotlib, WandB, pycocotools, onnx
 - **금지**: HuggingFace 전체, Albumentations, Lightning, Accelerate, 그 외 modeling/data/aug/training/eval 지원하는 3rd party
-- **AI 도구**: Claude Code 사용 — 리포트에 사용 내역 기록 필수
+- **`onnx` 정당화**: 모델 포맷/serialization 라이브러리이지 modeling/training/eval 지원 도구가 아님. 교수님이 ONNX 제출을 명시적으로 요구 + 가중치 제거 코드 직접 제공 → 사실상 명시적 허용
+- **AI 도구**: Claude Code 사용 — **리포트에 사용 내역(어떤 부분에 어떻게 도움 받았는지) 기록 필수** (PDF 슬라이드 8 명시)
 
 ### 2.2 Data
 
@@ -199,6 +200,7 @@ python -m src.measure_flops --onnx model_structure.onnx
 
 - **trainaug** = VOC 2012 train (1,464) + SBD extra (9,118), val overlap 제외 ID list 사용
 - VOC 2012 val은 학습 절대 금지 (코드 경로 분리)
+- **`p1/input/test_public/` 격리 가드 (개발 안전망)**: train/val DataLoader가 어떤 코드 경로로도 접근 금지. `data/builder.py`에서 `voc_root` / `coco_root` 경로 normalize 후 `input/`이 path component로 포함되면 assertion 실패시켜 학습 중단. test image는 `infer.py`/`eval.py`에서만 입력으로 받음
 
 ### 5.2 COCO → VOC 클래스 매핑
 
@@ -440,6 +442,8 @@ wandb.init(
 
 GPU 증거: `wandb.run` 시스템 metrics에 자동 기록 + `summary["gpu_name"]` 명시.
 
+**Run 가시성**: WandB run은 **public 또는 entity team 공유 권한 유지** (PDF "마감 후 수업 시간에 WandB 페이지 직접 확인" 요구). private/삭제 금지. team `g1nie-sungkyunkwan-university` project 안에 두면 교수님 접근 가능 (필요 시 share link 명시).
+
 ### 7.10 학습 시간 추정
 
 | 환경 | Stage 1 (80K) | Stage 2 (30K) | 합계 |
@@ -565,7 +569,7 @@ python -m src.export_onnx --ckpt checkpoints/model.pth --out model_structure.onn
 | ★ 4/29 Threshold | (외부) | B/A/C 결정 (model-architect+efficiency+loss 팀) |
 | 5. Full ablation | 데스크탑 full scale (80K+30K), 3-4개 ablation | best config 선정 |
 | 6. Colab 공식 run | Drive에 COCO 업로드 → Colab T4/L4에서 처음부터 학습 | T4/L4 GPU 증거 있는 WandB run |
-| 7. Submission + Report | TTA 추론 → PNG zip + ONNX export, report PDF (6p), 코드베이스 zip | 3 제출물 완성 |
+| 7. Submission + Report | TTA 추론 → PNG zip + ONNX export, report PDF (6p, 11pt) **with AI usage section**, 코드베이스 zip | 3 제출물 완성 |
 | 8. Buffer | 막판 수정 | 제출 (5/5 23:59 전) |
 
 ### 9.1 Agent Team 매핑
@@ -589,7 +593,7 @@ python -m src.export_onnx --ckpt checkpoints/model.pth --out model_structure.onn
 
 | 위험 | 확률 | 영향 | 완화 |
 |---|---|---|---|
-| 5070 Ti CUDA/PyTorch 호환성 | 중 | 데스크탑 학습 불가 | Colab을 Plan B로 (느리지만 동작) |
+| 5070 Ti CUDA/PyTorch 호환성 | 중 | 데스크탑 학습 불가 | **Phase 1 첫 task로 PyTorch import + cuda available + sm_120 호환 검증** (안 되면 Colab Plan B 즉시 전환) |
 | COCO 다운로드 느림 (~25GB) | 중 | Phase 5 지연 | Phase 1 시작 동시 background로 |
 | Colab 세션 끊김 | 높음 | 재개 필요 | resume first-class (Phase 3 핵심) |
 | 4/29 threshold harsh (예: 5점=≤5GFLOPs) | 낮음 | B 폐기 → A 전환 | 모듈러로 config 1줄 변경 |
@@ -622,5 +626,28 @@ python -m src.export_onnx --ckpt checkpoints/model.pth --out model_structure.onn
 - ONNX 기반 FLOPs 측정 (custom counter)
 - 2-stage 학습 (COCO+VOC pretrain → VOC finetune)
 - EMA + AMP + resume + WandB + agent team Phase 매핑
+
+### 12.1 수업 내용 활용 (S_Code 5점 항목)
+
+PDF "Try to use many things learned in class" 충족을 위해 다음 자산 명시적 재사용/적용:
+
+- **w4 reference 재사용**: `w4/utils/compute_utils.py` (PyTorch FLOPs counter) → `src/utils/flops.py`로 이식 (import 경로 + ONNX counter 추가)
+- **w4 architectural reference**: `w4/models/deeplab_v3.py` (ASPP/Backbone/DLv3 구조 educational 주석 풍부) → `src/models/necks/aspp.py` 작성 시 reference로 사용 (단, TorchVision pretrained backbone으로 변경 필요)
+- **w5 training pattern reference**: `w5/train.py` (iter-based loop + WandB integration + AverageMeter + best ckpt 패턴 + YAML config) → `src/train.py` 작성 시 동일 골격 적용 (단, segmentation-specific 확장 필요)
+- **수업 lecture 적용**: w4 lecture/ex0X 시리즈 (BatchNorm, GroupNorm, conv 1x1, batch norm 등) 개념을 model code 주석에서 명시적으로 reference (예: ASPP의 1×1 conv가 왜 채널 mixing인지, BN momentum 선택 근거)
+
+**리포트 §Code Quality에 위 재사용 매핑을 표로 명시.**
+
+### 12.2 리포트 필수 섹션 (S_Report 5점 항목)
+
+리포트 (PDF, 6p 이하, 11pt) 구성:
+
+1. **Model Architecture** — backbone/neck/head 구조 + 수업 내용 매핑
+2. **Training Recipe** — 2-stage, optimizer, scheduler, AMP, EMA, loss 결합
+3. **Validation Results** — 최종 mIoU + per-class IoU + WandB curve 캡처
+4. **Ablation / Trial History** — 데스크탑 탐색 중 시도한 변형들 (LR, aug, dice 가중치 등)
+5. **Failure Case Analysis** — 약한 클래스 / 잘못된 sample 시각화 (`utils/viz.py`)
+6. **WandB Evidence** — Overview page 캡처 (T4/L4 GPU 증거 포함), monitoring 캡처
+7. **AI Tools Usage** — Claude Code 사용 내역 (어떤 phase에서 어떤 도움 — 설계, 코드 리뷰, 디버깅 등)
 
 이 spec을 근거로 다음 단계인 implementation plan을 작성한다.
