@@ -5,9 +5,9 @@ Color/blur/erasing 등 image-only 변환은 자동으로 mask 영향 없음.
 
 파이프라인 순서 주의:
 - RandomResize → RandomCrop: ScaleJitter 대신 사용해 crop_size 이상으로 보장
-- ToDtype + Normalize가 ColorJitter 이전에 위치: float32 정규화 공간에서 jitter 적용.
-  이렇게 하면 ImageNet-mean 픽셀(정규화 후 ≈0)에 대해 brightness/contrast가
-  항등 변환으로 작동하므로 normalization unit test가 안정적으로 통과.
+- ColorJitter, RandomGrayscale, GaussianBlur는 uint8 또는 [0, 1] float에서 작동.
+  따라서 ToDtype/Normalize 이전에 위치해야 올바른 HSV 변환이 이루어진다.
+- RandomErasing은 정규화된 텐서에서도 OK (값을 0으로 erase).
 """
 from __future__ import annotations
 
@@ -43,19 +43,19 @@ def build_train_transform(
     # RandomResize: 짧은 변 기준으로 [min_size, max_size] 범위 랜덤 리사이즈.
     # ScaleJitter 대신 사용: crop_size * scale_range → both dims >= crop_size * scale_range[0].
     # scale_range[0] >= 1.0이면 패딩 불필요; < 1.0이면 pad_if_needed가 처리.
-    min_size = int(scale_range[0] * crop_size)
-    max_size = int(scale_range[1] * crop_size)
-    if min_size >= max_size:
-        max_size = min_size + 1  # RandomResize requires strict min < max
+    min_s = int(scale_range[0] * crop_size)
+    max_s = int(scale_range[1] * crop_size)
+    if max_s <= min_s:
+        max_s = min_s + 1
     pipeline = v2.Compose([
-        v2.RandomResize(min_size=min_size, max_size=max_size, antialias=True),
+        v2.RandomResize(min_size=min_s, max_size=max_s, antialias=True),
         v2.RandomCrop(size=crop_size, pad_if_needed=True, fill={tv_tensors.Image: 0, tv_tensors.Mask: 255}),
         v2.RandomHorizontalFlip(p=0.5),
-        v2.ToDtype(torch.float32, scale=True),
-        v2.Normalize(mean=list(IMAGENET_MEAN), std=list(IMAGENET_STD)),
         v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
         v2.RandomGrayscale(p=0.1),
         v2.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0)),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=list(IMAGENET_MEAN), std=list(IMAGENET_STD)),
         v2.RandomErasing(p=0.25),
     ])
     return _PairWrapper(pipeline)

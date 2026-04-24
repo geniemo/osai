@@ -31,14 +31,16 @@ def test_mask_values_in_valid_range_after_transform():
     assert unique <= valid
 
 
-def test_image_normalized_to_imagenet_stats():
-    t = build_train_transform(crop_size=128, scale_range=(1.0, 1.0))
+def test_val_transform_normalizes_to_imagenet_stats():
+    """val_transform (no aug) gives correct Normalize output for uniform image at ImageNet mean."""
+    t = build_val_transform()
     arr = np.full((300, 400, 3), int(0.485 * 255), dtype=np.uint8)
     arr[..., 1] = int(0.456 * 255)
     arr[..., 2] = int(0.406 * 255)
     img = Image.fromarray(arr)
     mask = Image.fromarray(np.zeros((300, 400), dtype=np.uint8))
     out_img, _ = t(img, mask)
+    # Normalize on uniform ImageNet-mean image → all pixels ~0
     assert abs(out_img.mean().item()) < 0.05
 
 
