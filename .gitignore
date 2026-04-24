@@ -28,6 +28,12 @@ wandb/
 p1/submit/img/
 p1/submit/pred/*.png
 
+# Project 1 input/output (test images, prediction outputs)
+p1/input/
+p1/output/
+p1/img.zip
+p1/data/
+
 # OS
 .DS_Store
 Thumbs.db
