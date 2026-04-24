@@ -70,26 +70,32 @@ def evaluate(model: nn.Module, loader, device, num_classes=21) -> tuple[float, l
     return metric.compute()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    args = parser.parse_args()
+def run_stage(cfg: dict, stage: int) -> None:
+    """단일 stage 학습. stage 2는 base_lr/iters/warmup이 다르고, stage 1 best ckpt를 자동 로드."""
+    cfg = {**cfg, "data": {**cfg["data"], "stage": stage}}
+    if stage == 2:
+        cfg["optimizer"] = {**cfg["optimizer"], "base_lr": cfg["training"]["stage2_base_lr"]}
+        cfg["scheduler"] = {**cfg["scheduler"], "warmup_iters": cfg["training"]["stage2_warmup"]}
+        total_iters = cfg["training"]["stage2_iters"]
+    else:
+        total_iters = cfg["training"]["stage1_iters"]
 
-    cfg = load_config(args.config)
+    # stage 별 ckpt path
+    cfg = {**cfg, "paths": {**cfg["paths"], "training_state": cfg["paths"]["training_state"].replace(".pth", f"_stage{stage}.pth")}}
+
+    # === 이하 기존 main 로직 ===
     set_seed(cfg["seed"])
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
-    # === Resume용 wandb_run_id peek ===
     training_state_path = Path(cfg["paths"]["training_state"])
     wandb_run_id = None
     if training_state_path.exists():
         ckpt_peek = torch.load(str(training_state_path), map_location="cpu", weights_only=False)
         wandb_run_id = ckpt_peek.get("wandb_run_id")
 
-    # === wandb.init ===
     import wandb
     from datetime import datetime
-    run_name = f"{cfg['wandb']['run_name_prefix']}_{datetime.now().strftime('%m%d')}_{cfg['model']['backbone']}_stage{cfg['data']['stage']}"
+    run_name = f"{cfg['wandb']['run_name_prefix']}_{datetime.now().strftime('%m%d')}_{cfg['model']['backbone']}_stage{stage}"
     run = wandb.init(
         entity=cfg["wandb"]["entity"],
         project=cfg["wandb"]["project"],
@@ -97,15 +103,13 @@ def main() -> None:
         config=cfg,
         id=wandb_run_id,
         resume="allow",
-        tags=cfg["wandb"]["tags"] + [f"stage{cfg['data']['stage']}"],
+        tags=cfg["wandb"]["tags"] + [f"stage{stage}"],
     )
     wandb_run_id = run.id
 
-    # === build (data, model, optimizer, scheduler, scaler, ema, criterion) ===
     train_loader, val_loader = build_dataloaders(cfg)
     model = build_model(cfg).to(device)
     optimizer = make_optimizer(model, cfg)
-    total_iters = cfg["training"]["stage1_iters"]
     scheduler = make_poly_scheduler(optimizer, total_iters, cfg["scheduler"]["warmup_iters"], cfg["scheduler"]["power"])
     criterion = SegLoss(
         num_classes=cfg["model"]["num_classes"],
@@ -123,12 +127,10 @@ def main() -> None:
     ema_model.eval()
     ema_decay = cfg["training"]["ema_decay"]
 
-    # === GPU + params summary ===
     run.summary["gpu_name"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     n_params = sum(p.numel() for p in model.parameters())
     run.summary["params/total"] = n_params
 
-    # === resume full state ===
     ckpt_dir = Path(cfg["paths"]["ckpt_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
     best_ckpt_path = Path(cfg["paths"]["best_ckpt"])
     final_ckpt_path = Path(cfg["paths"]["final_ckpt"])
@@ -142,8 +144,12 @@ def main() -> None:
         iter_count = meta["iter"]
         best_miou = meta["best_miou"]
         print(f"[resume] from iter {iter_count}, best_miou={best_miou:.4f}")
+    elif stage == 2 and Path(cfg["paths"]["best_ckpt"]).exists():
+        bc = torch.load(cfg["paths"]["best_ckpt"], map_location="cpu", weights_only=False)
+        model.load_state_dict(bc["ema_state"])
+        ema_model.load_state_dict(bc["ema_state"])
+        print(f"[stage2] loaded best ckpt from stage1 (mIoU={bc['miou']:.4f})")
 
-    # === training loop ===
     data_iter = iter(train_loader)
     model.train()
     log_interval = cfg["training"]["log_interval"]
@@ -179,12 +185,12 @@ def main() -> None:
 
         if iter_count % cfg["training"]["ckpt_interval"] == 0:
             save_full(
-                path=str(training_state_path), iter_count=iter_count, stage=cfg["data"]["stage"],
+                path=str(training_state_path), iter_count=iter_count, stage=stage,
                 model=model, ema_model=ema_model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
                 best_miou=best_miou, wandb_run_id=wandb_run_id, config=cfg,
             )
 
-        val_interval = cfg["training"][f"val_interval_stage{cfg['data']['stage']}"]
+        val_interval = cfg["training"][f"val_interval_stage{stage}"]
         if iter_count % val_interval == 0:
             miou_ema, _ = evaluate(ema_model, val_loader, device)
             wandb.log({"val/mIoU_ema": miou_ema, "val/best_mIoU": best_miou}, step=iter_count)
@@ -194,8 +200,21 @@ def main() -> None:
                 torch.save({"ema_state": ema_model.state_dict(), "iter": iter_count, "miou": miou_ema}, best_ckpt_path)
 
     save_model_only(str(final_ckpt_path), ema_model)
-    print(f"[done] final ckpt → {final_ckpt_path}, best_miou={best_miou:.4f}")
+    print(f"[done] stage {stage} final ckpt → {final_ckpt_path}, best_miou={best_miou:.4f}")
     run.finish()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--stage", type=int, default=None, help="1 or 2; 생략 시 둘 다 순차 실행")
+    args = parser.parse_args()
+    cfg = load_config(args.config)
+    if args.stage is None:
+        run_stage(cfg, 1)
+        run_stage(cfg, 2)
+    else:
+        run_stage(cfg, args.stage)
 
 
 if __name__ == "__main__":
