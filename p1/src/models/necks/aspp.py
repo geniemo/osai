@@ -31,7 +31,6 @@ class ASPP(nn.Module):
         self.global_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             _conv1x1(in_channels, out_channels),
-            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
         n_branches = 1 + len(rates) + 1
