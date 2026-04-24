@@ -14,6 +14,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from src.data.builder import build_dataloaders
 from src.losses.seg_loss import SegLoss
 from src.models.builder import build_model
+from src.utils.checkpoint import save_full, load_full, save_model_only
 from src.utils.metrics import SegMetric
 from src.utils.seed import set_seed
 
@@ -98,7 +99,24 @@ def main() -> None:
     scaler = torch.amp.GradScaler('cuda', enabled=(cfg["training"]["amp_dtype"] == "fp16"))
     amp_dtype = torch.float16 if cfg["training"]["amp_dtype"] == "fp16" else torch.bfloat16
 
+    ckpt_dir = Path(cfg["paths"]["ckpt_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
+    training_state_path = Path(cfg["paths"]["training_state"])
+    best_ckpt_path = Path(cfg["paths"]["best_ckpt"])
+    final_ckpt_path = Path(cfg["paths"]["final_ckpt"])
+
     iter_count = 0
+    best_miou = 0.0
+    wandb_run_id = None  # Task 26에서 set
+    if training_state_path.exists():
+        meta = load_full(
+            path=str(training_state_path),
+            model=model, ema_model=ema_model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
+        )
+        iter_count = meta["iter"]
+        best_miou = meta["best_miou"]
+        wandb_run_id = meta["wandb_run_id"]
+        print(f"[resume] from iter {iter_count}, best_miou={best_miou:.4f}")
+
     data_iter = iter(train_loader)
     model.train()
     log_interval = cfg["training"]["log_interval"]
@@ -124,6 +142,23 @@ def main() -> None:
         iter_count += 1
         if iter_count % log_interval == 0:
             print(f"iter {iter_count}/{total_iters} loss={loss.item():.4f} lr={optimizer.param_groups[1]['lr']:.5f}")
+
+        if iter_count % cfg["training"]["ckpt_interval"] == 0:
+            save_full(
+                path=str(training_state_path), iter_count=iter_count, stage=cfg["data"]["stage"],
+                model=model, ema_model=ema_model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
+                best_miou=best_miou, wandb_run_id=wandb_run_id, config=cfg,
+            )
+        val_interval = cfg["training"][f"val_interval_stage{cfg['data']['stage']}"]
+        if iter_count % val_interval == 0:
+            miou_ema, _ = evaluate(ema_model, val_loader, device)
+            print(f"  [val] mIoU_ema={miou_ema:.4f}")
+            if miou_ema > best_miou:
+                best_miou = miou_ema
+                torch.save({"ema_state": ema_model.state_dict(), "iter": iter_count, "miou": miou_ema}, best_ckpt_path)
+
+    save_model_only(str(final_ckpt_path), ema_model)
+    print(f"[done] final ckpt → {final_ckpt_path}, best_miou={best_miou:.4f}")
 
 
 if __name__ == "__main__":
