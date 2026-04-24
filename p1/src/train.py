@@ -79,13 +79,31 @@ def main() -> None:
     set_seed(cfg["seed"])
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
 
+    # === Resume용 wandb_run_id peek ===
+    training_state_path = Path(cfg["paths"]["training_state"])
+    wandb_run_id = None
+    if training_state_path.exists():
+        ckpt_peek = torch.load(str(training_state_path), map_location="cpu", weights_only=False)
+        wandb_run_id = ckpt_peek.get("wandb_run_id")
+
+    # === wandb.init ===
+    import wandb
+    from datetime import datetime
+    run_name = f"{cfg['wandb']['run_name_prefix']}_{datetime.now().strftime('%m%d')}_{cfg['model']['backbone']}_stage{cfg['data']['stage']}"
+    run = wandb.init(
+        entity=cfg["wandb"]["entity"],
+        project=cfg["wandb"]["project"],
+        name=run_name,
+        config=cfg,
+        id=wandb_run_id,
+        resume="allow",
+        tags=cfg["wandb"]["tags"] + [f"stage{cfg['data']['stage']}"],
+    )
+    wandb_run_id = run.id
+
+    # === build (data, model, optimizer, scheduler, scaler, ema, criterion) ===
     train_loader, val_loader = build_dataloaders(cfg)
     model = build_model(cfg).to(device)
-    ema_model = copy.deepcopy(model)
-    for p in ema_model.parameters():
-        p.requires_grad = False
-    ema_model.eval()
-    ema_decay = cfg["training"]["ema_decay"]
     optimizer = make_optimizer(model, cfg)
     total_iters = cfg["training"]["stage1_iters"]
     scheduler = make_poly_scheduler(optimizer, total_iters, cfg["scheduler"]["warmup_iters"], cfg["scheduler"]["power"])
@@ -99,14 +117,23 @@ def main() -> None:
     scaler = torch.amp.GradScaler('cuda', enabled=(cfg["training"]["amp_dtype"] == "fp16"))
     amp_dtype = torch.float16 if cfg["training"]["amp_dtype"] == "fp16" else torch.bfloat16
 
+    ema_model = copy.deepcopy(model)
+    for p in ema_model.parameters():
+        p.requires_grad = False
+    ema_model.eval()
+    ema_decay = cfg["training"]["ema_decay"]
+
+    # === GPU + params summary ===
+    run.summary["gpu_name"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    n_params = sum(p.numel() for p in model.parameters())
+    run.summary["params/total"] = n_params
+
+    # === resume full state ===
     ckpt_dir = Path(cfg["paths"]["ckpt_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
-    training_state_path = Path(cfg["paths"]["training_state"])
     best_ckpt_path = Path(cfg["paths"]["best_ckpt"])
     final_ckpt_path = Path(cfg["paths"]["final_ckpt"])
-
     iter_count = 0
     best_miou = 0.0
-    wandb_run_id = None  # Task 26에서 set
     if training_state_path.exists():
         meta = load_full(
             path=str(training_state_path),
@@ -114,9 +141,9 @@ def main() -> None:
         )
         iter_count = meta["iter"]
         best_miou = meta["best_miou"]
-        wandb_run_id = meta["wandb_run_id"]
         print(f"[resume] from iter {iter_count}, best_miou={best_miou:.4f}")
 
+    # === training loop ===
     data_iter = iter(train_loader)
     model.train()
     log_interval = cfg["training"]["log_interval"]
@@ -140,7 +167,14 @@ def main() -> None:
         scheduler.step()
         update_ema(ema_model, model, ema_decay)
         iter_count += 1
+
         if iter_count % log_interval == 0:
+            wandb.log({
+                "step": iter_count,
+                "train/loss": loss.item(),
+                "lr/backbone": optimizer.param_groups[0]["lr"],
+                "lr/head": optimizer.param_groups[1]["lr"],
+            }, step=iter_count)
             print(f"iter {iter_count}/{total_iters} loss={loss.item():.4f} lr={optimizer.param_groups[1]['lr']:.5f}")
 
         if iter_count % cfg["training"]["ckpt_interval"] == 0:
@@ -149,9 +183,11 @@ def main() -> None:
                 model=model, ema_model=ema_model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
                 best_miou=best_miou, wandb_run_id=wandb_run_id, config=cfg,
             )
+
         val_interval = cfg["training"][f"val_interval_stage{cfg['data']['stage']}"]
         if iter_count % val_interval == 0:
             miou_ema, _ = evaluate(ema_model, val_loader, device)
+            wandb.log({"val/mIoU_ema": miou_ema, "val/best_mIoU": best_miou}, step=iter_count)
             print(f"  [val] mIoU_ema={miou_ema:.4f}")
             if miou_ema > best_miou:
                 best_miou = miou_ema
@@ -159,6 +195,7 @@ def main() -> None:
 
     save_model_only(str(final_ckpt_path), ema_model)
     print(f"[done] final ckpt → {final_ckpt_path}, best_miou={best_miou:.4f}")
+    run.finish()
 
 
 if __name__ == "__main__":
