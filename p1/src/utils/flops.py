@@ -56,3 +56,97 @@ def count_pytorch_flops(
         model.train()
 
     return int(sum(flops.values()))
+
+
+# === ONNX FLOPs counter (custom, no 3rd-party FLOPs lib) ===
+
+from collections import defaultdict
+from typing import Optional, Tuple as _T
+
+import onnx
+from onnx import shape_inference, numpy_helper
+
+
+def _get_attr(node, name: str, default):
+    for a in node.attribute:
+        if a.name == name:
+            if a.type == onnx.AttributeProto.INT:
+                return a.i
+            if a.type == onnx.AttributeProto.INTS:
+                return list(a.ints)
+            if a.type == onnx.AttributeProto.FLOAT:
+                return a.f
+            if a.type == onnx.AttributeProto.STRING:
+                return a.s.decode()
+    return default
+
+
+def _build_shape_map(model: onnx.ModelProto) -> dict:
+    shapes = {}
+    for vi in list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info):
+        dims = []
+        for d in vi.type.tensor_type.shape.dim:
+            dims.append(d.dim_value if d.dim_value > 0 else None)
+        shapes[vi.name] = dims
+    for init in model.graph.initializer:
+        shapes[init.name] = list(init.dims)
+    return shapes
+
+
+def _conv_flops(node, shape_map) -> int:
+    out = shape_map.get(node.output[0])
+    w = shape_map.get(node.input[1])
+    if out is None or w is None or any(x is None for x in out + w):
+        return 0
+    n, c_out, h_out, w_out = out
+    _, c_in_per_g, k_h, k_w = w
+    return n * c_out * h_out * w_out * c_in_per_g * k_h * k_w
+
+
+def _gemm_flops(node, shape_map) -> int:
+    a = shape_map.get(node.input[0])
+    out = shape_map.get(node.output[0])
+    if a is None or out is None or any(x is None for x in a + out):
+        return 0
+    m, k = a[-2], a[-1]
+    n = out[-1]
+    return m * k * n
+
+
+def _matmul_flops(node, shape_map) -> int:
+    return _gemm_flops(node, shape_map)
+
+
+def count_onnx_flops(
+    onnx_path: str,
+    input_shape: _T[int, int, int, int] = (1, 3, 480, 640),
+) -> _T[int, dict]:
+    """ONNX 그래프 FLOPs (MAC). Conv/Gemm/MatMul만. BN/ReLU/Add/Resize는 0.
+
+    가중치 제거된 model_structure.onnx도 OK — initializer.dims는 유지됨.
+    """
+    model = onnx.load(onnx_path)
+
+    inp = model.graph.input[0]
+    for i, val in enumerate(input_shape):
+        inp.type.tensor_type.shape.dim[i].dim_value = val
+
+    inferred = shape_inference.infer_shapes(model, strict_mode=False)
+    shape_map = _build_shape_map(inferred)
+
+    total = 0
+    breakdown: dict = defaultdict(int)
+    for node in inferred.graph.node:
+        op = node.op_type
+        if op == "Conv":
+            f = _conv_flops(node, shape_map)
+        elif op == "Gemm":
+            f = _gemm_flops(node, shape_map)
+        elif op == "MatMul":
+            f = _matmul_flops(node, shape_map)
+        else:
+            f = 0
+        total += f
+        breakdown[op] += f
+
+    return total, dict(breakdown)

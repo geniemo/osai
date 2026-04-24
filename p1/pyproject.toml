@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "onnxscript>=0.1"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
