@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 
 import torch
@@ -15,6 +16,14 @@ from src.losses.seg_loss import SegLoss
 from src.models.builder import build_model
 from src.utils.metrics import SegMetric
 from src.utils.seed import set_seed
+
+
+@torch.no_grad()
+def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    for ema_p, p in zip(ema_model.parameters(), model.parameters()):
+        ema_p.mul_(decay).add_(p.detach(), alpha=1 - decay)
+    for ema_b, b in zip(ema_model.buffers(), model.buffers()):
+        ema_b.copy_(b)
 
 
 def load_config(path: str) -> dict:
@@ -71,6 +80,11 @@ def main() -> None:
 
     train_loader, val_loader = build_dataloaders(cfg)
     model = build_model(cfg).to(device)
+    ema_model = copy.deepcopy(model)
+    for p in ema_model.parameters():
+        p.requires_grad = False
+    ema_model.eval()
+    ema_decay = cfg["training"]["ema_decay"]
     optimizer = make_optimizer(model, cfg)
     total_iters = cfg["training"]["stage1_iters"]
     scheduler = make_poly_scheduler(optimizer, total_iters, cfg["scheduler"]["warmup_iters"], cfg["scheduler"]["power"])
@@ -106,6 +120,7 @@ def main() -> None:
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
+        update_ema(ema_model, model, ema_decay)
         iter_count += 1
         if iter_count % log_interval == 0:
             print(f"iter {iter_count}/{total_iters} loss={loss.item():.4f} lr={optimizer.param_groups[1]['lr']:.5f}")
