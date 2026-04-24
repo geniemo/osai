@@ -41,13 +41,14 @@ scheduler:
   warmup_iters: 1000
 
 training:
+  # SBD 미사용 (PDF 정책 준수). VOC train만 1,464장 → Stage 2 iter 축소.
   stage1_iters: 80000
-  stage2_iters: 30000
+  stage2_iters: 8000
   stage2_base_lr: 0.001
   stage2_warmup: 500
   log_interval: 50
   val_interval_stage1: 5000
-  val_interval_stage2: 2000
+  val_interval_stage2: 1000
   ckpt_interval: 5000
   amp_dtype: fp16
   ema_decay: 0.9999

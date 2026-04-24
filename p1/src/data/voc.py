@@ -1,14 +1,17 @@
-"""Pascal-VOC 2012 segmentation dataset (trainaug + val).
+"""Pascal-VOC 2012 segmentation dataset (train + val).
 
-trainaug = VOC 2012 train (1464) + SBD extra (9118) – val overlap (= 10582 total).
-SBD ID list는 download.py가 다운로드 후 'train_aug.txt'로 저장.
+PDF 정책: ImageNet/COCO/VOC만 허용. SBD는 명시 X → **사용 안 함**.
+- split="train" → VOC 2012 train (1,464 images, SegmentationClass)
+- split="val"   → VOC 2012 val (1,449 images)
+
+만약 추후 교수님이 SBD 허용 확인 시: split="trainaug" 분기를 다시 추가하고
+download.py에서 SBD merge 활성화.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable, Optional
 
-import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -25,14 +28,14 @@ class VOCSegDataset(Dataset):
         self.transform = transform
         self.devkit = self.root / "VOCdevkit" / "VOC2012"
 
-        if split == "trainaug":
-            id_file = self.devkit / "ImageSets" / "Segmentation" / "train_aug.txt"
-            mask_dir = self.devkit / "SegmentationClassAug"
+        if split == "train":
+            id_file = self.devkit / "ImageSets" / "Segmentation" / "train.txt"
         elif split == "val":
             id_file = self.devkit / "ImageSets" / "Segmentation" / "val.txt"
-            mask_dir = self.devkit / "SegmentationClass"
         else:
-            raise ValueError(f"Unknown split: {split}")
+            raise ValueError(f"Unknown split: {split} (allowed: 'train', 'val')")
+
+        mask_dir = self.devkit / "SegmentationClass"
 
         with open(id_file) as f:
             self.ids = [line.strip() for line in f if line.strip()]

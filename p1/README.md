@@ -7,7 +7,7 @@ Pascal-VOC 21-class semantic segmentation. ResNet-50 + DeepLabV3+ (OS=16) 디폴
 ```bash
 cd p1
 uv sync                                        # PyTorch + CUDA 12.8 binary
-uv run python -m src.data.download             # VOC + SBD + COCO 다운 (최초 1회, ~30-60분)
+uv run python -m src.data.download             # VOC + COCO 다운 (최초 1회, ~30-60분)
 ```
 
 ## Training

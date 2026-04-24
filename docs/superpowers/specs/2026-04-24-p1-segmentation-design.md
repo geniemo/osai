@@ -77,7 +77,7 @@ S = S_mIoU × S_FLOPs + S_Code + S_Report
 | 학습 입력 | random scale [0.5, 2.0] + 480×480 crop | DeepLab 표준 |
 | 추론 입력 | 원본 aspect 보존 + multi-scale TTA + hflip | mIoU 추가 (FLOPs 점수 무영향) |
 | FLOPs 측정 입력 | (1, 3, 480, 640) ONNX 단발 forward | 채점 사양 |
-| 데이터 전략 | (C) **VOC + COCO 2-stage** (Stage1=mixed, Stage2=VOC trainaug) | SOTA recipe |
+| 데이터 전략 | (C) **VOC + COCO 2-stage** (Stage1=mixed, Stage2=VOC train only — SBD 미사용) | PDF 명시 안 된 SBD 보수적 제외 |
 | Augmentation | 기본 5개 + GaussianBlur + RandomErasing + RandomGrayscale | torchvision.v2 표준 + cheap wins |
 | COCO 재현 | Colab에서도 처음부터 다운로드 + mask 생성 | 재현성 100% |
 | Loss | CE(ignore=255) + 0.5 Dice + 0.4 Aux CE on layer3 | DLv3 표준 + class imbalance |
@@ -126,7 +126,7 @@ p1/
     ├── data/
     │   ├── __init__.py
     │   ├── builder.py                   # build_dataloaders(cfg)
-    │   ├── voc.py                       # Pascal-VOC trainaug + val
+    │   ├── voc.py                       # Pascal-VOC train + val (SBD 미사용)
     │   ├── coco.py                      # COCO + VOC class mapping + mask cache
     │   ├── transforms.py                # torchvision.v2 joint image-mask
     │   └── download.py                  # 자동 다운로드 (재현성)
@@ -194,11 +194,11 @@ python -m src.measure_flops --onnx model_structure.onnx
 | Stage | 데이터셋 | 이미지 수 | 출처 |
 |---|---|---|---|
 | Stage 1 (사전학습) | COCO 2017 train (VOC subset) | ~95K (필터 후) | cocodataset.org (~25GB) |
-| Stage 1 (사전학습) | VOC 2012 trainaug (SBD 통합) | 10,582 | TorchVision auto + SBD 다운 |
-| Stage 2 (파인튜닝) | VOC 2012 trainaug | 10,582 | 위와 동일 |
-| Validation (양 stage) | VOC 2012 val | 1,449 | TorchVision auto |
+| Stage 1 (사전학습) | VOC 2012 train | 1,464 | VOC 공식 |
+| Stage 2 (파인튜닝) | VOC 2012 train | 1,464 | 위와 동일 |
+| Validation (양 stage) | VOC 2012 val | 1,449 | VOC 공식 |
 
-- **trainaug** = VOC 2012 train (1,464) + SBD extra (9,118), val overlap 제외 ID list 사용
+- **SBD (Semantic Boundary Dataset) 사용 안 함** — PDF 정책에 ImageNet/COCO/VOC만 명시되어 있고 SBD는 별도 데이터셋. 보수적 해석으로 제외. 교수님이 4/29 QA에서 SBD 허용 명시 시 `voc.py`에 `split="trainaug"` 분기 + `download.py`에 `download_sbd_and_merge` 다시 추가하면 즉시 활성화 가능
 - VOC 2012 val은 학습 절대 금지 (코드 경로 분리)
 - **`p1/input/test_public/` 격리 가드 (개발 안전망)**: train/val DataLoader가 어떤 코드 경로로도 접근 금지. `data/builder.py`에서 `voc_root` / `coco_root` 경로 normalize 후 `input/`이 path component로 포함되면 assertion 실패시켜 학습 중단. test image는 `infer.py`/`eval.py`에서만 입력으로 받음
 
@@ -240,8 +240,8 @@ Validation transform: ToDtype + Normalize만 (no aug, 원본 크기 유지).
 
 ### 5.5 2-stage 데이터 결합
 
-- **Stage 1**: `ConcatDataset(coco_voc, voc_trainaug)` 단순 random shuffle (COCO dominant OK, 광범위 학습 목적)
-- **Stage 2**: VOC trainaug only
+- **Stage 1**: `ConcatDataset(coco_voc(~95K), voc_train(1.4K))` 단순 random shuffle (COCO 강하게 dominant, 광범위 학습 목적)
+- **Stage 2**: VOC train(1,464장) only — SBD 미사용으로 데이터 적음, **stage2_iters를 30K → 8K로 축소** (88 epoch 정도, overfitting 방지)
 
 ### 5.6 DataLoader
 
@@ -363,15 +363,15 @@ Polynomial decay: `lr(t) = base_lr * (1 - t/T)^0.9`. Linear warmup 첫 1000 iter
 
 | 항목 | Stage 1 (COCO+VOC pretrain) | Stage 2 (VOC finetune) |
 |---|---|---|
-| 데이터 | COCO_VOC + VOC_trainaug concat | VOC_trainaug only |
-| iters | 80,000 | 30,000 |
+| 데이터 | COCO_VOC(~95K) + VOC_train(1.4K) concat | VOC_train(1,464) only |
+| iters | 80,000 | **8,000** (SBD 미사용 → 데이터 적어 축소) |
 | batch_size | 16 | 16 |
 | base_lr | 0.01 | 0.001 |
 | warmup | 1000 iters | 500 iters |
 | schedule | poly 0.9 | poly 0.9 |
-| validation | 매 5,000 iters | 매 2,000 iters |
+| validation | 매 5,000 iters | 매 1,000 iters |
 
-Stage 1 종료 → best ckpt 자동 로드 → Stage 2 시작 (같은 train.py).
+Stage 1 종료 → best ckpt 자동 로드 → Stage 2 시작 (같은 train.py). Stage 2 8K iter ≈ 88 epoch (1.4K samples / batch 16 = 91 iter/epoch).
 
 ### 7.5 Mixed precision (fp16)
 
@@ -446,11 +446,11 @@ GPU 증거: `wandb.run` 시스템 metrics에 자동 기록 + `summary["gpu_name"
 
 ### 7.10 학습 시간 추정
 
-| 환경 | Stage 1 (80K) | Stage 2 (30K) | 합계 |
+| 환경 | Stage 1 (80K) | Stage 2 (8K) | 합계 |
 |---|---|---|---|
-| 5070 Ti | ~2.2h | ~0.8h | ~3h |
-| L4 | ~3.2h | ~1.2h | ~4.4h |
-| T4 | ~4.4h | ~1.7h | ~6.1h |
+| 5070 Ti | ~2.2h | ~0.2h | ~2.4h |
+| L4 | ~3.2h | ~0.3h | ~3.5h |
+| T4 | ~4.4h | ~0.5h | ~4.9h |
 
 ---
 
@@ -614,6 +614,7 @@ python -m src.export_onnx --ckpt checkpoints/model.pth --out model_structure.onn
 - **EMA decay**: 0.9999 (effective window ~10K iter). 0.999면 reactive
 - **Aux loss 가중치**: 0.4 (DLv3 표준). 학습 안정 도움
 - **데이터 sampling 가중치**: Stage 1에서 random shuffle (oversampling 안 함). VOC oversample은 Stage 2가 담당
+- **SBD 사용 여부 (PENDING — 교수님 확인 대기)**: 현재 SBD 미사용 (PDF 명시 X로 보수적 제외). 4/29 QA에서 허용 확인 시 즉시 활성화. SBD 활성화 시 VOC 학습 데이터 1,464 → 10,582로 7배 증가, mIoU +5~10% 기대
 
 ---
 

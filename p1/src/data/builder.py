@@ -25,7 +25,7 @@ def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
     """cfg["data"]에서 path/배치/워커 읽어 train+val DataLoader 생성.
 
     cfg["data"]["stage"] = 1: COCO+VOC mixed
-    cfg["data"]["stage"] = 2: VOC trainaug only
+    cfg["data"]["stage"] = 2: VOC train only (1,464 images, no SBD per PDF policy)
     """
     data_cfg = cfg["data"]
     voc_root = data_cfg["voc_root"]
@@ -39,7 +39,7 @@ def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
     )
     val_t = build_val_transform()
 
-    voc_train = VOCSegDataset(root=voc_root, split="trainaug", transform=train_t)
+    voc_train = VOCSegDataset(root=voc_root, split="train", transform=train_t)
     voc_val = VOCSegDataset(root=voc_root, split="val", transform=val_t)
 
     stage = data_cfg.get("stage", 1)
