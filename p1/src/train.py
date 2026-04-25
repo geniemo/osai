@@ -116,6 +116,9 @@ def run_stage(cfg: dict, stage: int) -> None:
         ignore_index=cfg["loss"]["ignore_index"],
         dice_weight=cfg["loss"]["dice_weight"],
         aux_weight=cfg["loss"]["aux_weight"],
+        lovasz_weight=cfg["loss"].get("lovasz_weight", 0.0),
+        boundary_weight=cfg["loss"].get("boundary_weight", 0.0),
+        boundary_alpha=cfg["loss"].get("boundary_alpha", 5.0),
     )
 
     scaler = torch.amp.GradScaler('cuda', enabled=(cfg["training"]["amp_dtype"] == "fp16"))

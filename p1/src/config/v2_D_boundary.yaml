@@ -1,0 +1,75 @@
+# v2.D ablation: Boundary-weighted CE loss + 기존 Dice 유지
+# Bootstrap from v2.0 best ckpt
+# Usage: uv run python -m src.train --config src/config/v2_D_boundary.yaml --stage 2
+
+seed: 42
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 16
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 2
+  copy_paste:
+    enabled: false
+  class_balanced: false
+
+model:
+  backbone: resnet50
+  head: deeplabv3plus
+  num_classes: 21
+  output_stride: 16
+  pretrained: true
+  use_aux: true
+  aspp_rates: [6, 12, 18]
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  lovasz_weight: 0.0
+  boundary_weight: 0.5      # 추가 boundary-weighted CE
+  boundary_alpha: 5.0       # boundary 픽셀 5x weight
+  aux_weight: 0.4
+
+optimizer:
+  type: sgd
+  base_lr: 0.001
+  momentum: 0.9
+  weight_decay: 0.0005
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 500
+
+training:
+  stage1_iters: 80000
+  stage2_iters: 8000
+  stage2_base_lr: 0.001
+  stage2_warmup: 500
+  log_interval: 50
+  val_interval_stage1: 5000
+  val_interval_stage2: 1000
+  ckpt_interval: 2000
+  amp_dtype: fp16
+  ema_decay: 0.9999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-local
+  run_name_prefix: v2.D
+  tags: [desktop, voc-only, ablation, v2.D, boundary]
+
+paths:
+  bootstrap_from: ./checkpoints/v2.0/best.pth
+  ckpt_dir: ./checkpoints/v2.D
+  training_state: ./checkpoints/v2.D/training_state.pth
+  best_ckpt: ./checkpoints/v2.D/best.pth
+  final_ckpt: ./checkpoints/v2.D/model.pth
