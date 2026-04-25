@@ -10,7 +10,7 @@ download.py에서 SBD merge 활성화.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -45,10 +45,22 @@ class VOCSegDataset(Dataset):
     def __len__(self) -> int:
         return len(self.ids)
 
-    def __getitem__(self, index: int):
+    def get_raw(self, index: int) -> Tuple[Image.Image, Image.Image]:
+        """Return raw PIL (image, mask) without transform.
+
+        Used by Copy-Paste wrapper to manipulate before applying transforms.
+        """
         img_id = self.ids[index]
         img = Image.open(self.img_dir / f"{img_id}.jpg").convert("RGB")
         mask = Image.open(self.mask_dir / f"{img_id}.png")
-        if self.transform is not None:
-            img, mask = self.transform(img, mask)
         return img, mask
+
+    def apply_transform(self, img: Image.Image, mask: Image.Image):
+        """Apply self.transform to (img, mask) tuple."""
+        if self.transform is not None:
+            return self.transform(img, mask)
+        return img, mask
+
+    def __getitem__(self, index: int):
+        img, mask = self.get_raw(index)
+        return self.apply_transform(img, mask)
