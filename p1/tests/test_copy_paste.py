@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from src.data.copy_paste import build_instance_pool
+from src.data.copy_paste import build_instance_pool, paste_instance, CopyPasteDataset
 
 
 VOC_ROOT = Path(os.environ.get("VOC_ROOT", "data/voc"))
@@ -75,3 +75,48 @@ def test_build_instance_pool_real_voc():
     assert len(pool) > 50
     for _, _, cls in pool:
         assert 1 <= cls <= 20
+
+
+def test_paste_instance_modifies_target():
+    target_img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    target_mask = np.zeros((100, 100), dtype=np.uint8)
+
+    patch_img = np.zeros((20, 20, 3), dtype=np.uint8)
+    patch_mask = np.ones((20, 20), dtype=bool)
+    cls_id = 8
+
+    np.random.seed(0)
+    random.seed(0)
+    out_img, out_mask = paste_instance(
+        target_img.copy(), target_mask.copy(), patch_img, patch_mask, cls_id
+    )
+    assert (out_img == 0).any()
+    assert (out_mask == cls_id).any()
+
+
+def test_paste_instance_resizes_too_large_patch():
+    target_img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    target_mask = np.zeros((100, 100), dtype=np.uint8)
+    patch_img = np.zeros((90, 90, 3), dtype=np.uint8)
+    patch_mask = np.ones((90, 90), dtype=bool)
+
+    np.random.seed(0)
+    random.seed(0)
+    out_img, out_mask = paste_instance(
+        target_img.copy(), target_mask.copy(), patch_img, patch_mask, 8
+    )
+    # paste된 영역 50×50 이하 (resize)
+    assert (out_mask == 8).sum() <= 50 * 50
+
+
+def test_copy_paste_dataset_preserves_length(tmp_path):
+    from src.data.voc import VOCSegDataset
+    voc_root, ids = _make_synthetic_voc(tmp_path)
+    seg_dir = voc_root / "VOCdevkit/VOC2012/ImageSets/Segmentation"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    (seg_dir / "train.txt").write_text("\n".join(ids))
+    base = VOCSegDataset(root=str(voc_root), split="train", transform=None)
+
+    pool = build_instance_pool(str(voc_root), ids, min_area=100, max_area_ratio=0.99)
+    cp_ds = CopyPasteDataset(base, pool, p=1.0, num_paste=(1, 2))
+    assert len(cp_ds) == len(base)
