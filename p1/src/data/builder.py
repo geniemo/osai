@@ -13,11 +13,15 @@ from src.utils.seed import worker_init_fn
 
 
 def _assert_not_test_path(path: str, *, role: str) -> None:
-    """train data root는 'input/' 디렉토리를 포함해선 안 됨 (test set 격리)."""
+    """train data root는 'submit/' 또는 'input/' 디렉토리를 포함해선 안 됨 (test set 격리).
+
+    test image는 submit/img/ (PDF 컨벤션) 또는 input/ (legacy)에 있을 수 있음.
+    train pipeline이 이 경로 읽으면 test set leakage.
+    """
     parts = PurePath(path).parts
-    assert "input" not in parts, (
-        f"{role}={path!r} must not include 'input/' — test set 격리 위반. "
-        f"data 경로는 'data/voc' 등 input/ 외부에."
+    assert "submit" not in parts and "input" not in parts, (
+        f"{role}={path!r} must not include 'submit/' or 'input/' — test set 격리 위반. "
+        f"data 경로는 'data/voc' 등 submit/, input/ 외부에."
     )
 
 

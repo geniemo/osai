@@ -34,12 +34,7 @@ uv run python -m src.eval --config src/config/default.yaml --ckpt checkpoints/mo
 ## Inference (TTA)
 
 ```bash
-# test_public → output/pred_<TAG>
-uv run python -m src.infer --config src/config/default.yaml \
-    --ckpt checkpoints/model.pth \
-    --input input/test_public --output output/pred_FINAL
-
-# 학교 reproduce (submit/img → submit/pred)
+# 추론 (PDF 컨벤션: submit/img → submit/pred)
 uv run python -m src.infer --config src/config/default.yaml \
     --ckpt checkpoints/model.pth \
     --input submit/img --output submit/pred
