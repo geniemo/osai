@@ -73,7 +73,7 @@ zip -r p1/2020314315_project01.zip \
 
 ```bash
 uv run python -m src.package_submission \
-    --pred output/pred_FINAL \
+    --pred submit/pred \
     --out submission_pred.zip
 # 검증: 1000 PNG, 000-999.png, 픽셀 [0,20], <500MB
 ```

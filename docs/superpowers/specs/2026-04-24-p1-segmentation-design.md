@@ -46,7 +46,7 @@ S = S_mIoU × S_FLOPs + S_Code + S_Report
 
 - **허용**: ImageNet-1K, MS-COCO, Pascal-VOC
 - **금지**: VOC val/test annotation을 학습에 사용
-- **외부 평가셋**: `p1/input/test_public/`에 1000장 (000.jpg~999.jpg) 공개. 비공개 GT로 채점
+- **외부 평가셋**: `p1/submit/img/`에 1000장 (000.jpg~999.jpg) 공개. 비공개 GT로 채점 (PDF 14p 컨벤션)
 
 ### 2.3 Modeling
 
@@ -108,7 +108,7 @@ p1/
 │   ├── img/                             # 빈 폴더 (placeholder, PDF 요구)
 │   └── pred/                            # 빈 폴더 (reproduce 결과 위치)
 ├── input/
-│   └── test_public/                     # 공개 test image 1000장 (gitignore)
+│   └── (legacy, 미사용)                  # test image는 submit/img/로 이동
 ├── output/                              # 추론 결과 (gitignore)
 │   └── pred_<TAG>/                      # 실험별 prediction
 └── src/
@@ -163,18 +163,13 @@ python -m src.train --config src/config/default.yaml
 # val mIoU
 python -m src.eval --config src/config/default.yaml --ckpt checkpoints/model.pth
 
-# 추론 (TTA): test_public → output/pred_<TAG>
-python -m src.infer --config src/config/default.yaml \
-    --ckpt checkpoints/model.pth \
-    --input input/test_public --output output/pred_<TAG>
-
-# 학교 reproduce (submit/img → submit/pred)
+# 추론 (TTA, PDF 컨벤션: submit/img → submit/pred)
 python -m src.infer --config src/config/default.yaml \
     --ckpt checkpoints/model.pth \
     --input submit/img --output submit/pred
 
 # 채점용 PNG zip
-python -m src.package_submission --pred output/pred_<TAG> --out submission_pred.zip
+python -m src.package_submission --pred submit/pred --out submission_pred.zip
 
 # ONNX export (가중치 제거)
 python -m src.export_onnx --config src/config/default.yaml \
@@ -200,7 +195,7 @@ python -m src.measure_flops --onnx model_structure.onnx
 
 - **SBD (Semantic Boundary Dataset) 사용 안 함** — PDF 정책에 ImageNet/COCO/VOC만 명시되어 있고 SBD는 별도 데이터셋. 보수적 해석으로 제외. 교수님이 4/29 QA에서 SBD 허용 명시 시 `voc.py`에 `split="trainaug"` 분기 + `download.py`에 `download_sbd_and_merge` 다시 추가하면 즉시 활성화 가능
 - VOC 2012 val은 학습 절대 금지 (코드 경로 분리)
-- **`p1/input/test_public/` 격리 가드 (개발 안전망)**: train/val DataLoader가 어떤 코드 경로로도 접근 금지. `data/builder.py`에서 `voc_root` / `coco_root` 경로 normalize 후 `input/`이 path component로 포함되면 assertion 실패시켜 학습 중단. test image는 `infer.py`/`eval.py`에서만 입력으로 받음
+- **`p1/submit/img/` 격리 가드 (개발 안전망)**: train/val DataLoader가 어떤 코드 경로로도 접근 금지. `data/builder.py`에서 `voc_root` / `coco_root` 경로 normalize 후 `submit/` 또는 `input/`이 path component로 포함되면 assertion 실패시켜 학습 중단. test image는 `infer.py`/`eval.py`에서만 입력으로 받음
 
 ### 5.2 COCO → VOC 클래스 매핑
 
@@ -536,7 +531,7 @@ zip -r 2020314315_project01.zip \
 
 #### Channel B-1 (PNG zip)
 ```bash
-python -m src.package_submission --pred output/pred_FINAL --out submission_pred.zip
+python -m src.package_submission --pred submit/pred --out submission_pred.zip
 ```
 
 `package_submission.py` 검증:

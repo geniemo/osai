@@ -613,7 +613,7 @@ osai/                                           # repo root
     ├── README.md                               # 학습/추론/제출 방법
     ├── CLAUDE.md                               # Project 1 특화 지침
     ├── data/                                   # VOC, COCO (gitignored)
-    ├── input/test_public/                      # 1000장 test images (gitignored)
+    ├── submit/img/                              # 1000장 test images (gitignored, PDF 컨벤션)
     ├── checkpoints/                            # ckpt 저장 (model.pth 등, gitignored except .gitkeep)
     ├── submit/                                 # 제출용 placeholder
     ├── colab/COLAB.md                          # Colab 재현 가이드
