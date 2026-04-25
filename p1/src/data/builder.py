@@ -1,7 +1,7 @@
 """DataLoader builder + test set 격리 가드 (개발 안전망)."""
 from __future__ import annotations
 
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import Tuple
 
 from torch.utils.data import ConcatDataset, DataLoader
@@ -53,12 +53,45 @@ def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
     else:
         train_ds = voc_train
 
+    # Copy-Paste (Stage 2 한정 활성화 — Stage 1은 ConcatDataset이라 wrap 어려움)
+    cp_cfg = data_cfg.get("copy_paste", {})
+    if cp_cfg.get("enabled", False) and stage == 2:
+        from src.data.copy_paste import build_instance_pool, CopyPasteDataset
+        train_ids = voc_train.ids
+        print(f"[copy-paste] building instance pool from {len(train_ids)} VOC images...")
+        pool = build_instance_pool(voc_root, train_ids)
+        print(f"[copy-paste] pool size: {len(pool)} instances")
+        train_ds = CopyPasteDataset(
+            train_ds,
+            pool,
+            p=cp_cfg.get("p", 0.5),
+            num_paste=tuple(cp_cfg.get("num_paste", [1, 3])),
+        )
+
+    # Class-balanced sampling (Stage 2 한정)
+    use_sampler = data_cfg.get("class_balanced", False) and stage == 2
+    if use_sampler:
+        from src.data.sampler import build_balanced_sampler
+        sampler = build_balanced_sampler(voc_root, voc_train.ids)
+        shuffle = False
+        print(f"[class-balanced] WeightedRandomSampler activated for Stage 2")
+    else:
+        sampler = None
+        shuffle = True
+
     common = dict(
         num_workers=data_cfg["num_workers"],
         pin_memory=data_cfg["pin_memory"],
         persistent_workers=data_cfg.get("persistent_workers", True),
         worker_init_fn=worker_init_fn,
     )
-    train_loader = DataLoader(train_ds, batch_size=data_cfg["batch_size"], shuffle=True, drop_last=True, **common)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=data_cfg["batch_size"],
+        shuffle=shuffle,
+        drop_last=True,
+        sampler=sampler,
+        **common,
+    )
     val_loader = DataLoader(voc_val, batch_size=1, shuffle=False, drop_last=False, **common)
     return train_loader, val_loader
