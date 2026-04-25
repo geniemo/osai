@@ -144,11 +144,20 @@ def run_stage(cfg: dict, stage: int) -> None:
         iter_count = meta["iter"]
         best_miou = meta["best_miou"]
         print(f"[resume] from iter {iter_count}, best_miou={best_miou:.4f}")
-    elif stage == 2 and Path(cfg["paths"]["best_ckpt"]).exists():
-        bc = torch.load(cfg["paths"]["best_ckpt"], map_location="cpu", weights_only=False)
-        model.load_state_dict(bc["ema_state"])
-        ema_model.load_state_dict(bc["ema_state"])
-        print(f"[stage2] loaded best ckpt from stage1 (mIoU={bc['miou']:.4f})")
+    elif stage == 2:
+        bootstrap_path = cfg["paths"].get("bootstrap_from")
+        if bootstrap_path and Path(bootstrap_path).exists():
+            bc = torch.load(bootstrap_path, map_location="cpu", weights_only=False)
+            state = bc.get("ema_state", bc)
+            model.load_state_dict(state)
+            ema_model.load_state_dict(state)
+            miou = bc.get("miou", "unknown")
+            print(f"[bootstrap] from {bootstrap_path} (mIoU={miou})")
+        elif Path(cfg["paths"]["best_ckpt"]).exists():
+            bc = torch.load(cfg["paths"]["best_ckpt"], map_location="cpu", weights_only=False)
+            model.load_state_dict(bc["ema_state"])
+            ema_model.load_state_dict(bc["ema_state"])
+            print(f"[stage2] loaded best ckpt from stage1 (mIoU={bc['miou']:.4f})")
 
     data_iter = iter(train_loader)
     model.train()
