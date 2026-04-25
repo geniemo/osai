@@ -59,7 +59,7 @@ training:
 
 wandb:
   entity: g1nie-sungkyunkwan-university
-  project: osai-p1-local
+  project: osai-p1-colab
   run_name_prefix: colab
   tags: [colab, voc+coco, final]
 
