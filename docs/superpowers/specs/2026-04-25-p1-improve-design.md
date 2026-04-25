@@ -528,11 +528,26 @@ Case 4: 모두 0 또는 negative
   → negative result 리포트 기록
 ```
 
-### 8.2 결정 기준
+### 8.2 결정 기준 (per-ablation)
 
-- **Δ > +1% TTA**: 확실히 keep
-- **Δ ∈ [-0.5, +1] TTA**: 통계적 noise 가능성, drop
-- **Δ < -0.5% TTA**: drop + 분석 (왜 hurt했는지 리포트)
+**Per-ablation threshold** — ablation 코드 복잡도에 따라 keep 기준 다름. 단순한 ablation은 작은 이득도 keep, 복잡한 ablation은 큰 이득만.
+
+| Ablation | 코드 복잡도 | Colab 재현 추가 위험 | Keep threshold (Δ TTA vs v2.0) |
+|---|---|---|---|
+| **v2.0 Stage 1 160K** | 0 (yaml 1줄) | 없음 (학습 시간만 ↑) | **> 0** (플러스면 keep) |
+| **v2.B Class-balanced** | 낮음 (~50줄, 표준 sampler) | 낮음 | **> +0.3** |
+| **v2.C Lovász** | 중간 (~80줄, 단위 테스트로 검증) | 중간 | **> +0.5** |
+| **v2.A Copy-Paste** | 높음 (~200줄, instance pool, paste 로직) | 높음 (bug risk) | **> +1.0** |
+
+**공통 규칙:**
+- **Δ < 0**: drop (당연)
+- **Δ ≥ +2%**: 무조건 keep (어떤 비용도 정당화)
+- **Δ < -0.5%**: drop + 분석 (왜 hurt했는지 리포트)
+
+**근거:**
+- val mIoU 1회 측정 표준편차 ~±0.3-0.7% (random aug, GPU 비결정성, EMA 시점 등)
+- 같은 +0.5%라도 단순 ablation(config flag)은 maintain 비용 거의 없어 keep, 복잡 ablation(200줄 코드)은 Colab bug risk가 marginal gain 상쇄
+- ablation 합쳤을 때 interaction noise — 작은 이득들 모으면 noise만 커지고 net 효과 X 가능
 
 ### 8.3 학습 전략
 
