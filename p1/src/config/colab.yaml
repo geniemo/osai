@@ -65,7 +65,7 @@ wandb:
 
 paths:
   # Drive에 ckpt 저장 (세션 끊겨도 resume 가능)
-  ckpt_dir: /content/drive/MyDrive/osai-p1/checkpoints
-  training_state: /content/drive/MyDrive/osai-p1/checkpoints/training_state.pth
-  best_ckpt: /content/drive/MyDrive/osai-p1/checkpoints/best.pth
-  final_ckpt: /content/drive/MyDrive/osai-p1/checkpoints/model.pth
+  ckpt_dir: /content/drive/MyDrive/osai/p1/checkpoints
+  training_state: /content/drive/MyDrive/osai/p1/checkpoints/training_state.pth
+  best_ckpt: /content/drive/MyDrive/osai/p1/checkpoints/best.pth
+  final_ckpt: /content/drive/MyDrive/osai/p1/checkpoints/model.pth
