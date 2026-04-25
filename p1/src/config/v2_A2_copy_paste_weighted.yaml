@@ -1,0 +1,82 @@
+# v2.A.2 ablation: Copy-Paste with weak-class biased instance sampling
+# v2.A 기준 chair (-1.43), sofa (+1.07이지만 절대값 51%) 등 weak class 표적
+# Bootstrap from v2.0 best ckpt
+# Usage: uv run python -m src.train --config src/config/v2_A2_copy_paste_weighted.yaml --stage 2
+
+seed: 42
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 16
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 2
+  copy_paste:
+    enabled: true
+    p: 0.5
+    num_paste: [1, 3]
+    class_weights:           # weak class 가중 sampling
+      9: 4.0                 # chair (TTA 38.88, 가장 낮음)
+      18: 3.0                # sofa (51.37)
+      16: 2.5                # pottedplant (71.86)
+      5: 2.0                 # bottle (78.21)
+      11: 1.5                # diningtable (73.13)
+  class_balanced: false
+
+model:
+  backbone: resnet50
+  head: deeplabv3plus
+  num_classes: 21
+  output_stride: 16
+  pretrained: true
+  use_aux: true
+  aspp_rates: [6, 12, 18]
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  lovasz_weight: 0.0
+  aux_weight: 0.4
+
+optimizer:
+  type: sgd
+  base_lr: 0.001
+  momentum: 0.9
+  weight_decay: 0.0005
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 500
+
+training:
+  stage1_iters: 80000
+  stage2_iters: 8000
+  stage2_base_lr: 0.001
+  stage2_warmup: 500
+  log_interval: 50
+  val_interval_stage1: 5000
+  val_interval_stage2: 1000
+  ckpt_interval: 2000
+  amp_dtype: fp16
+  ema_decay: 0.9999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-local
+  run_name_prefix: v2.A2
+  tags: [desktop, voc-only, ablation, v2.A2, copy-paste, weak-class-weighted]
+
+paths:
+  bootstrap_from: ./checkpoints/v2.0/best.pth
+  ckpt_dir: ./checkpoints/v2.A2
+  training_state: ./checkpoints/v2.A2/training_state.pth
+  best_ckpt: ./checkpoints/v2.A2/best.pth
+  final_ckpt: ./checkpoints/v2.A2/model.pth

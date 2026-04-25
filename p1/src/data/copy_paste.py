@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -113,7 +113,11 @@ def paste_instance(
 
 
 class CopyPasteDataset(Dataset):
-    """Wraps VOCSegDataset; with prob p, paste 1-N instances from pool."""
+    """Wraps VOCSegDataset; with prob p, paste 1-N instances from pool.
+
+    class_weights={cls_id: weight}로 instance sampling 가중 가능 (v2.A.2).
+    None이면 uniform sampling (v2.A 표준).
+    """
 
     def __init__(
         self,
@@ -121,14 +125,27 @@ class CopyPasteDataset(Dataset):
         instance_pool: List[Tuple[np.ndarray, np.ndarray, int]],
         p: float = 0.5,
         num_paste: Tuple[int, int] = (1, 3),
+        class_weights: Optional[dict] = None,
     ) -> None:
         self.base = base
         self.pool = instance_pool
         self.p = p
         self.num_paste_range = num_paste
+        # Per-instance sampling weight (None → uniform)
+        if class_weights and len(instance_pool) > 0:
+            self.instance_weights = [
+                float(class_weights.get(cls, 1.0)) for _, _, cls in instance_pool
+            ]
+        else:
+            self.instance_weights = None
 
     def __len__(self) -> int:
         return len(self.base)
+
+    def _sample_one(self):
+        if self.instance_weights is not None:
+            return random.choices(self.pool, weights=self.instance_weights, k=1)[0]
+        return random.choice(self.pool)
 
     def __getitem__(self, idx: int):
         img_pil, mask_pil = self.base.get_raw(idx)
@@ -137,7 +154,7 @@ class CopyPasteDataset(Dataset):
             mask_arr = np.array(mask_pil)
             n = random.randint(*self.num_paste_range)
             for _ in range(n):
-                patch_img, patch_mask, cls_id = random.choice(self.pool)
+                patch_img, patch_mask, cls_id = self._sample_one()
                 img_arr, mask_arr = paste_instance(
                     img_arr, mask_arr, patch_img, patch_mask, cls_id
                 )

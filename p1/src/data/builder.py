@@ -61,11 +61,17 @@ def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
         print(f"[copy-paste] building instance pool from {len(train_ids)} VOC images...")
         pool = build_instance_pool(voc_root, train_ids)
         print(f"[copy-paste] pool size: {len(pool)} instances")
+        # class_weights: yaml 키가 str로 파싱될 수 있어 int로 변환
+        cw_raw = cp_cfg.get("class_weights")
+        cw = {int(k): float(v) for k, v in cw_raw.items()} if cw_raw else None
+        if cw:
+            print(f"[copy-paste] weighted sampling: {cw}")
         train_ds = CopyPasteDataset(
             train_ds,
             pool,
             p=cp_cfg.get("p", 0.5),
             num_paste=tuple(cp_cfg.get("num_paste", [1, 3])),
+            class_weights=cw,
         )
 
     # Class-balanced sampling (Stage 2 한정)
