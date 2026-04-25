@@ -1,0 +1,71 @@
+# Colab config: Stage 1 + Stage 2, 데스크탑 default.yaml과 동일 설계, 경로만 Drive로
+# Usage (Colab cell):
+#   !uv run python -m src.train --config src/config/colab.yaml
+
+seed: 42
+
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 16          # T4/L4 16-24GB → 16 안전
+  num_workers: 4          # Colab CPU 적음 (8 → 4 축소)
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 1
+
+model:
+  backbone: resnet50
+  head: deeplabv3plus
+  num_classes: 21
+  output_stride: 16
+  pretrained: true
+  use_aux: true
+  aspp_rates: [6, 12, 18]
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  aux_weight: 0.4
+
+optimizer:
+  type: sgd
+  base_lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 1000
+
+training:
+  # SBD 미사용 (PDF 정책). default.yaml과 동일 schedule.
+  stage1_iters: 80000
+  stage2_iters: 8000
+  stage2_base_lr: 0.001
+  stage2_warmup: 500
+  log_interval: 50
+  val_interval_stage1: 5000
+  val_interval_stage2: 1000
+  ckpt_interval: 5000
+  amp_dtype: fp16          # T4는 bf16 미지원, fp16 universal
+  ema_decay: 0.9999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-local
+  run_name_prefix: colab
+  tags: [colab, voc+coco, final]
+
+paths:
+  # Drive에 ckpt 저장 (세션 끊겨도 resume 가능)
+  ckpt_dir: /content/drive/MyDrive/osai-p1/checkpoints
+  training_state: /content/drive/MyDrive/osai-p1/checkpoints/training_state.pth
+  best_ckpt: /content/drive/MyDrive/osai-p1/checkpoints/best.pth
+  final_ckpt: /content/drive/MyDrive/osai-p1/checkpoints/model.pth
