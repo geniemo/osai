@@ -1,7 +1,7 @@
-# v2.1 ablation: Stage 1 80K → 160K (다른 모든 것 default.yaml과 동일)
+# v2.0 ablation: Stage 1 80K → 160K (다른 모든 것 default.yaml과 동일)
 # 가설: COCO pretraining 더 길게 → +1~2% mIoU 기대
 # Training time: ~11h (Stage 1 160K) + ~0.5h (Stage 2 8K) = ~11.5h
-# Usage: uv run python -m src.train --config src/config/v2_1_stage1_160k.yaml
+# Usage: uv run python -m src.train --config src/config/v2_0_stage1_160k.yaml
 
 seed: 42
 
@@ -62,12 +62,12 @@ training:
 wandb:
   entity: g1nie-sungkyunkwan-university
   project: osai-p1-local
-  run_name_prefix: v2.1
-  tags: [desktop, voc+coco, ablation, v2.1, stage1-160k]
+  run_name_prefix: v2.0
+  tags: [desktop, voc+coco, ablation, v2.0, stage1-160k]
 
 paths:
-  # v1 baseline ckpt와 분리 (./checkpoints/v2.1/)
-  ckpt_dir: ./checkpoints/v2.1
-  training_state: ./checkpoints/v2.1/training_state.pth
-  best_ckpt: ./checkpoints/v2.1/best.pth
-  final_ckpt: ./checkpoints/v2.1/model.pth
+  # v1 baseline ckpt와 분리 (./checkpoints/v2.0/)
+  ckpt_dir: ./checkpoints/v2.0
+  training_state: ./checkpoints/v2.0/training_state.pth
+  best_ckpt: ./checkpoints/v2.0/best.pth
+  final_ckpt: ./checkpoints/v2.0/model.pth
