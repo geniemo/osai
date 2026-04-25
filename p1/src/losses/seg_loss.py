@@ -42,6 +42,7 @@ class SegLoss(nn.Module):
         ignore_index: int = 255,
         dice_weight: float = 0.5,
         aux_weight: float = 0.4,
+        lovasz_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.ignore_index = ignore_index
@@ -49,6 +50,7 @@ class SegLoss(nn.Module):
         self.dice = DiceLoss(num_classes=num_classes, ignore_index=ignore_index)
         self.dice_weight = dice_weight
         self.aux_weight = aux_weight
+        self.lovasz_weight = lovasz_weight
 
     def _ce(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         n_valid = (target != self.ignore_index).sum().clamp(min=1)
@@ -58,6 +60,11 @@ class SegLoss(nn.Module):
         loss = self._ce(main_logits, target)
         if self.dice_weight > 0:
             loss = loss + self.dice_weight * self.dice(main_logits, target)
+        if self.lovasz_weight > 0:
+            from src.losses.lovasz import lovasz_softmax
+            loss = loss + self.lovasz_weight * lovasz_softmax(
+                main_logits, target, ignore_index=self.ignore_index
+            )
         if aux_logits is not None and self.aux_weight > 0:
             loss = loss + self.aux_weight * self._ce(aux_logits, target)
         return loss
