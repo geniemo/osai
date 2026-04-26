@@ -65,7 +65,7 @@ class COCOSegDataset(Dataset):
         anns = [{"category_id": a["category_id"], "binary_mask": self.coco.annToMask(a)} for a in anns_raw]
         return build_voc_mask_from_anns(anns, h, w)
 
-    def __getitem__(self, index: int):
+    def get_raw(self, index: int):
         image_id = self.image_ids[index]
         info = self.coco.loadImgs([image_id])[0]
         img = Image.open(self.img_dir / info["file_name"]).convert("RGB")
@@ -76,6 +76,13 @@ class COCOSegDataset(Dataset):
             mask_arr = self._build_mask(image_id, info["height"], info["width"])
             Image.fromarray(mask_arr, mode="L").save(cache_path)
         mask = Image.fromarray(mask_arr, mode="L")
+        return img, mask
+
+    def apply_transform(self, img, mask):
         if self.transform is not None:
             img, mask = self.transform(img, mask)
         return img, mask
+
+    def __getitem__(self, index: int):
+        img, mask = self.get_raw(index)
+        return self.apply_transform(img, mask)

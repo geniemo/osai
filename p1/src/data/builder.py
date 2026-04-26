@@ -47,32 +47,39 @@ def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
     voc_val = VOCSegDataset(root=voc_root, split="val", transform=val_t)
 
     stage = data_cfg.get("stage", 1)
-    if stage == 1:
-        coco_train = COCOSegDataset(coco_root=coco_root, split="train2017", transform=train_t)
-        train_ds = ConcatDataset([coco_train, voc_train])
-    else:
-        train_ds = voc_train
 
-    # Copy-Paste (Stage 2 한정 활성화 — Stage 1은 ConcatDataset이라 wrap 어려움)
+    # Copy-Paste pool은 VOC train instances. CopyPasteDataset이 각 source dataset 위에 wrap.
     cp_cfg = data_cfg.get("copy_paste", {})
-    if cp_cfg.get("enabled", False) and stage == 2:
+    cp_enabled = cp_cfg.get("enabled", False)
+    if cp_enabled:
         from src.data.copy_paste import build_instance_pool, CopyPasteDataset
         train_ids = voc_train.ids
-        print(f"[copy-paste] building instance pool from {len(train_ids)} VOC images...")
+        print(f"[copy-paste] building instance pool from {len(train_ids)} VOC images (stage {stage})...")
         pool = build_instance_pool(voc_root, train_ids)
         print(f"[copy-paste] pool size: {len(pool)} instances")
-        # class_weights: yaml 키가 str로 파싱될 수 있어 int로 변환
         cw_raw = cp_cfg.get("class_weights")
         cw = {int(k): float(v) for k, v in cw_raw.items()} if cw_raw else None
         if cw:
             print(f"[copy-paste] weighted sampling: {cw}")
-        train_ds = CopyPasteDataset(
-            train_ds,
-            pool,
+        cp_kwargs = dict(
             p=cp_cfg.get("p", 0.5),
             num_paste=tuple(cp_cfg.get("num_paste", [1, 3])),
             class_weights=cw,
         )
+
+    if stage == 1:
+        coco_train = COCOSegDataset(coco_root=coco_root, split="train2017", transform=train_t)
+        if cp_enabled:
+            coco_train = CopyPasteDataset(coco_train, pool, **cp_kwargs)
+            voc_train_wrapped = CopyPasteDataset(voc_train, pool, **cp_kwargs)
+            train_ds = ConcatDataset([coco_train, voc_train_wrapped])
+        else:
+            train_ds = ConcatDataset([coco_train, voc_train])
+    else:
+        if cp_enabled:
+            train_ds = CopyPasteDataset(voc_train, pool, **cp_kwargs)
+        else:
+            train_ds = voc_train
 
     # Class-balanced sampling (Stage 2 한정)
     use_sampler = data_cfg.get("class_balanced", False) and stage == 2
