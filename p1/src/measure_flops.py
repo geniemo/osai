@@ -16,8 +16,7 @@ def main() -> None:
 
     if args.onnx:
         total_mac, breakdown = count_onnx_flops(args.onnx, (1, 3, 480, 640))
-        total_flop = total_mac * 2
-        print(f"[ONNX] {args.onnx}: {total_flop/1e9:.2f} GFLOPs (= {total_mac/1e9:.2f} GMACs ×2)")
+        print(f"[ONNX] {args.onnx}: {total_mac*2/1e9:.2f} GFLOPs")
         for op, f in sorted(breakdown.items(), key=lambda kv: -kv[1]):
             if f > 0:
                 print(f"    {op}: {f*2/1e9:.3f} GFLOP")
@@ -32,7 +31,7 @@ def main() -> None:
         m.load_state_dict(sd)
         m.export_mode().eval()
         f_py_mac = count_pytorch_flops(m, (1, 3, 480, 640))
-        print(f"[PyTorch] {f_py_mac*2/1e9:.2f} GFLOPs (= {f_py_mac/1e9:.2f} GMACs ×2, sanity check)")
+        print(f"[PyTorch] {f_py_mac*2/1e9:.2f} GFLOPs (sanity check)")
 
 
 if __name__ == "__main__":
