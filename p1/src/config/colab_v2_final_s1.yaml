@@ -1,26 +1,23 @@
-# v2.final-full: Copy-Paste + Boundary loss (both stages, from scratch)
-# Stage 1: COCO+VOC mixed, 160K iter
-# Stage 2: VOC train only, 8K iter
-# Usage: uv run python -m src.train --config src/config/v2_final.yaml  (stage 1+2 sequential)
+# Colab v2.final Stage 1: vanilla training (= v2.0 equivalent), 160K iter
+# COCO+VOC mixed, NO Copy-Paste, NO Boundary loss
+# 출력 ckpt가 Stage 2 (colab_v2_final_s2.yaml)에서 bootstrap됨
+# Usage (Colab cell):
+#   !uv run python -m src.train --config src/config/colab_v2_final_s1.yaml --stage 1
 
 seed: 42
+
 device: cuda
 
 data:
   voc_root: ./data/voc
   coco_root: ./data/coco
   batch_size: 16
-  num_workers: 8
+  num_workers: 4
   pin_memory: true
   persistent_workers: true
   crop_size: 480
   scale_range: [0.5, 2.0]
   stage: 1
-  copy_paste:
-    enabled: true
-    p: 0.5
-    num_paste: [1, 3]
-  class_balanced: false
 
 model:
   backbone: resnet50
@@ -34,9 +31,6 @@ model:
 loss:
   ignore_index: 255
   dice_weight: 0.5
-  lovasz_weight: 0.0
-  boundary_weight: 0.5
-  boundary_alpha: 5.0
   aux_weight: 0.4
 
 optimizer:
@@ -66,12 +60,12 @@ training:
 
 wandb:
   entity: g1nie-sungkyunkwan-university
-  project: osai-p1-local
-  run_name_prefix: v2.final
-  tags: [desktop, voc-coco, final, copy-paste, boundary]
+  project: osai-p1-colab
+  run_name_prefix: colab-v2.final-s1
+  tags: [colab, voc+coco, final, stage1]
 
 paths:
-  ckpt_dir: ./checkpoints/v2.final
-  training_state: ./checkpoints/v2.final/training_state.pth
-  best_ckpt: ./checkpoints/v2.final/best.pth
-  final_ckpt: ./checkpoints/v2.final/model.pth
+  ckpt_dir: /content/drive/MyDrive/osai/p1/checkpoints_v2_final/s1
+  training_state: /content/drive/MyDrive/osai/p1/checkpoints_v2_final/s1/training_state.pth
+  best_ckpt: /content/drive/MyDrive/osai/p1/checkpoints_v2_final/s1/best.pth
+  final_ckpt: /content/drive/MyDrive/osai/p1/checkpoints_v2_final/s1/model.pth
