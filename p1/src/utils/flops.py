@@ -1,9 +1,7 @@
 """FLOPs counters: PyTorch (forward hooks) + ONNX (graph traversal).
 
-PyTorch counter는 Conv2d/Linear의 MAC만 카운트 (×2 안 함).
-w4/utils/compute_utils.py 기반, w4 컨벤션 보존.
-
-ONNX counter (count_onnx_flops)는 다음 task에서 추가.
+내부 카운터는 MAC을 측정하고, 사용처에서 ×2를 곱해 GFLOPs로 표기한다.
+1 MAC (a*b+c) = 2 FLOP. 채점 사이트도 ×2 컨벤션.
 """
 from __future__ import annotations
 
