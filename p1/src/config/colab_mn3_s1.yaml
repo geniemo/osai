@@ -1,0 +1,70 @@
+# Colab v3 Stage 1: MobileNetV3-Large + LR-ASPP, vanilla 학습
+# Target: ≤ 15 GFLOPs (S_FLOPs=5)
+# COCO+VOC mixed, 160K iter, A100 권장
+# Usage: !uv run python -m src.train --config src/config/colab_mn3_s1.yaml --stage 1
+
+seed: 42
+
+device: cuda
+
+data:
+  voc_root: ./data/voc
+  coco_root: ./data/coco
+  batch_size: 32           # A100 24GB → 32 OK (모델 작음)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  crop_size: 480
+  scale_range: [0.5, 2.0]
+  stage: 1
+
+model:
+  backbone: mobilenet_v3_large
+  head: lraspp
+  num_classes: 21
+  output_stride: 16        # backbone에서 dilation 적용
+  pretrained: true
+  use_aux: false           # LR-ASPP는 aux head 없음
+  lraspp_mid: 64           # 14.89 GFLOPs (≤15 안전)
+
+loss:
+  ignore_index: 255
+  dice_weight: 0.5
+  aux_weight: 0.0          # aux 없음
+
+optimizer:
+  type: sgd
+  base_lr: 0.02            # batch 16→32 → LR 2x scale (linear)
+  momentum: 0.9
+  weight_decay: 0.0001     # MN3는 wd 작게 (overfit 방지)
+  backbone_lr_mult: 0.1
+
+scheduler:
+  type: poly
+  power: 0.9
+  warmup_iters: 1500       # batch 2x → warmup 1.5x
+
+training:
+  stage1_iters: 160000
+  stage2_iters: 8000
+  stage2_base_lr: 0.002
+  stage2_warmup: 500
+  log_interval: 50
+  val_interval_stage1: 5000
+  val_interval_stage2: 1000
+  ckpt_interval: 5000
+  amp_dtype: fp16
+  ema_decay: 0.9999
+  grad_clip: 1.0
+
+wandb:
+  entity: g1nie-sungkyunkwan-university
+  project: osai-p1-colab
+  run_name_prefix: colab-mn3-s1
+  tags: [colab, voc+coco, mn3, lraspp, stage1, a100]
+
+paths:
+  ckpt_dir: /content/drive/MyDrive/osai/p1/checkpoints_mn3/s1
+  training_state: /content/drive/MyDrive/osai/p1/checkpoints_mn3/s1/training_state.pth
+  best_ckpt: /content/drive/MyDrive/osai/p1/checkpoints_mn3/s1/best.pth
+  final_ckpt: /content/drive/MyDrive/osai/p1/checkpoints_mn3/s1/model.pth

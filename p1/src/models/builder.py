@@ -35,9 +35,10 @@ def build_model(cfg: dict):
         neck = ASPP(in_channels=high_ch, out_channels=256, rates=tuple(rates))
         head = DeepLabV3PlusHead(low_in_channels=low_ch, aspp_out_channels=256, num_classes=num_classes)
     elif head_name == "lraspp":
-        # Phase 8에서 LRASPPModel 직접 반환 (별도 구조라 여기서는 placeholder)
+        # LR-ASPP는 backbone (low+high) 둘 다 사용하는 별도 구조 → SegmentationModel 우회
         from src.models.necks.lr_aspp import LRASPPModel
-        return LRASPPModel(backbone, low_ch, high_ch, num_classes)
+        mid = mc.get("lraspp_mid", 128)
+        return LRASPPModel(backbone, low_ch, high_ch, num_classes, mid=mid)
     else:
         raise ValueError(f"Unknown head: {head_name}")
 

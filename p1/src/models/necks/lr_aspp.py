@@ -35,10 +35,10 @@ class LRASPPModel(nn.Module):
     SegmentationModel과 동일한 export_mode() 인터페이스 제공.
     """
 
-    def __init__(self, backbone: nn.Module, low_in: int, high_in: int, num_classes: int) -> None:
+    def __init__(self, backbone: nn.Module, low_in: int, high_in: int, num_classes: int, mid: int = 128) -> None:
         super().__init__()
         self.backbone = backbone
-        self.head = LRASPPHead(low_in, high_in, num_classes)
+        self.head = LRASPPHead(low_in, high_in, num_classes, mid=mid)
         self._export = False
         # placeholders for compatibility with SegmentationModel-like access
         self.aux_head = None
