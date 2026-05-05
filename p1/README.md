@@ -1,104 +1,124 @@
-# Project 1 — Semantic Segmentation (학번: 2020314315)
+# Project 1 — Pascal-VOC Semantic Segmentation (학번: 2020314315)
 
-Pascal-VOC 21-class semantic segmentation. ResNet-50 + DeepLabV3+ (OS=16) 디폴트, MobileNetV3-Large + LR-ASPP 백업. 자세한 설계는 `../docs/superpowers/specs/2026-04-24-p1-segmentation-design.md` 참조.
+ResNet-50 + DeepLabV3+ (Output Stride 16). COCO+VOC 2-stage 학습 + Copy-Paste augmentation + Boundary-weighted CE loss.
 
-## Setup
+## 환경 설정
 
 ```bash
 cd p1
-uv sync                                        # PyTorch + CUDA 12.8 binary
-uv run python -m src.data.download             # VOC + COCO 다운 (최초 1회, ~30-60분)
+uv sync                                    # PyTorch 2.11 + CUDA 12.8 binary
+uv run python -m src.data.download \
+    --voc-root data/voc --coco-root data/coco   # VOC + COCO 다운로드 (~30-60분, 1회)
+uv run python -m src.build_coco_masks \
+    --coco-root data/coco --num-workers 4       # COCO mask cache 사전 생성 (~30-60분, 1회)
 ```
 
-## Training
+## 학습 (2-stage)
 
 ```bash
-# Stage 1 → Stage 2 자동 (resume 자동)
-uv run python -m src.train --config src/config/default.yaml
+# Stage 1: COCO+VOC mixed, 160K iter, vanilla
+uv run python -m src.train --config src/config/colab_v2_final_s1.yaml --stage 1
 
-# 또는 stage 명시
-uv run python -m src.train --config src/config/default.yaml --stage 2
-
-# 라이트 백업 (A)
-uv run python -m src.train --config src/config/light.yaml
+# Stage 2: VOC only, 8K iter, Copy-Paste + Boundary loss (Stage 1 best ckpt에서 bootstrap)
+uv run python -m src.train --config src/config/colab_v2_final_s2.yaml --stage 2
 ```
 
-중간 ckpt: `checkpoints/training_state_stage{1,2}.pth` (resume용), `best.pth` (val mIoU 갱신 시), `model.pth` (학습 종료, EMA only).
+중간 ckpt: `training_state_stage{1,2}.pth` (resume용), `best.pth` (val mIoU 갱신 시), `model.pth` (학습 종료, EMA only).
 
-## Evaluation (val mIoU)
+세션 끊겨도 동일 명령 재실행 시 ckpt에서 자동 resume + WandB run continue.
+
+## 평가
 
 ```bash
-uv run python -m src.eval --config src/config/default.yaml --ckpt checkpoints/model.pth
+# Raw single-scale mIoU
+uv run python -m src.eval --config src/config/colab_v2_final_s2.yaml --ckpt checkpoints/best.pth
+
+# TTA mIoU (multi-scale [0.5, 0.75, 1.0, 1.25, 1.5] + hflip)
+uv run python -m src.eval_tta --config src/config/colab_v2_final_s2.yaml --ckpt checkpoints/best.pth
 ```
 
-## Inference (TTA)
+## 추론 (재현용)
 
 ```bash
-# 추론 (PDF 컨벤션: submit/img → submit/pred)
-uv run python -m src.infer --config src/config/default.yaml \
+uv run python -m src.infer \
+    --config src/config/colab_v2_final_s2.yaml \
     --ckpt checkpoints/model.pth \
     --input submit/img --output submit/pred
 ```
 
-TTA: multi-scale [0.5, 0.75, 1.0, 1.25, 1.5] × hflip = 10× forward. `--no-tta`로 비활성화 가능.
+`submit/img/0001.jpg` → `submit/pred/0001.png` (동일 파일명, PNG mode L, pixel ∈ [0, 20]).
 
-## FLOPs Measurement (채점 기준)
+TTA 기본 활성화. `--no-tta` 플래그로 비활성 가능.
+
+## FLOPs 측정 (채점 기준)
 
 ```bash
-# 1) ONNX export (가중치 제거, 10MB 이하)
-uv run python -m src.export_onnx --config src/config/default.yaml \
-    --ckpt checkpoints/model.pth --out model_structure.onnx
+# 1) ONNX export (가중치 제거, 채점용 graph)
+uv run python -m src.export_onnx \
+    --config src/config/colab_v2_final_s2.yaml \
+    --ckpt checkpoints/model.pth \
+    --out model_structure.onnx
 
-# 2) FLOPs 측정 (입력 [1, 3, 480, 640], ONNX 그래프 기준)
+# 2) FLOPs 측정 (입력 [1, 3, 480, 640], MAC × 2 = FLOP convention)
 uv run python -m src.measure_flops --onnx model_structure.onnx
-# → "[ONNX] model_structure.onnx: ~80 GFLOPs"
+# → "[ONNX] model_structure.onnx: 162.24 GFLOPs"
 
-# 3) (optional) PyTorch sanity check
-uv run python -m src.measure_flops --config src/config/default.yaml --ckpt checkpoints/model.pth
+# 3) (선택) PyTorch hook 기반 sanity check
+uv run python -m src.measure_flops \
+    --config src/config/colab_v2_final_s2.yaml \
+    --ckpt checkpoints/model.pth
 ```
 
-## Submission (3 채널)
+## 제출물 패키징
 
-### 1. 학교 사이트 (코드베이스 zip)
+### 학교 사이트 (코드베이스 zip)
 
 ```bash
 cd ..
-zip -r p1/2020314315_project01.zip \
+zip -r 2020314315_project01.zip \
     p1/src p1/checkpoints/model.pth p1/submit \
     p1/2020314315_project01_report.pdf p1/pyproject.toml p1/README.md \
     -x '**/__pycache__/*'
 ```
 
-### 2. 채점 사이트 — PNG zip
+### 채점 사이트 (PNG zip)
 
 ```bash
 uv run python -m src.package_submission \
     --pred submit/pred \
     --out submission_pred.zip
-# 검증: 1000 PNG, 000-999.png, 픽셀 [0,20], <500MB
 ```
 
-### 3. 채점 사이트 — ONNX
+검증: 1000 PNG (000.png~999.png), 픽셀 ∈ [0, 20], <500MB.
 
-`model_structure.onnx` 그대로 업로드 (≤10MB, 입력 [1,3,480,640]).
+### 채점 사이트 (ONNX)
 
-## Reproducibility
+`model_structure.onnx` 그대로 업로드 (≤10MB, 입력 [1, 3, 480, 640]).
 
-- 데스크탑(5070 Ti)에서 탐색 → Colab T4/L4에서 처음부터 전체 파이프라인 재실행이 제출물
-- WandB Overview에 T4/L4 GPU 증거 자동 기록 (`run.summary["gpu_name"]`)
-- `checkpoints/training_state_stage{1,2}.pth`로 세션 끊겨도 resume
+## Colab 재현 (전체 파이프라인)
 
-## Library Notes
+`colab/colab_v2_final.ipynb` 노트북 한 번 실행으로 데이터 다운로드 → COCO mask cache → Stage 1 → Stage 2 → 평가 → ONNX → submission zip 모두 자동 생성.
 
-- **torch>=2.7 + cu128 binary** (5070 Ti Blackwell sm_120 호환)
-- **HuggingFace, Albumentations 미사용** (PDF 정책 준수)
-- **`onnx`**: ONNX 제출 형식 처리 (modeling/training 라이브러리 아님, 교수님이 가중치 제거 코드 직접 제공)
-- **AI 도구**: Claude Code (설계, 코드 작성, 리뷰) — report에 사용 내역 기재
+T4/L4 GPU 권장. ckpt가 Drive에 저장되어 세션 끊겨도 resume.
+
+## 라이브러리
+
+- **torch 2.11 + cu128**, **torchvision** (CNN backbone, augmentation)
+- **opencv-python**, **Pillow**, **numpy** (이미지 처리)
+- **pycocotools** (COCO 라벨 매핑)
+- **onnx** (ONNX 제출용)
+- **wandb** (학습 로깅)
+
+HuggingFace 라이브러리, Albumentations, PyTorch Lightning, Accelerate 등 modeling/training 보조 3rd party는 사용하지 않음.
+
+## AI 도구
+
+본 과제 진행 시 **Claude Code (Anthropic)** 와 **ChatGPT (OpenAI)** 를 코드 구현·디버깅·문서 작성 보조에 사용. 자세한 내역은 리포트의 "AI 도구 사용 내역" 절 참조.
 
 ## Tests
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/ -q
 ```
 
-Expected: 34 passed, 1 skipped (VOC 데이터 없을 때)
+Expected: 61 passed.
