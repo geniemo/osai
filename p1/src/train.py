@@ -104,6 +104,7 @@ def run_stage(cfg: dict, stage: int) -> None:
         id=wandb_run_id,
         resume="allow",
         tags=cfg["wandb"]["tags"] + [f"stage{stage}"],
+        settings=wandb.Settings(init_timeout=300),
     )
     wandb_run_id = run.id
 
