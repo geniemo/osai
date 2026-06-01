@@ -41,3 +41,60 @@ def test_synthesis_w_layers_count():
     channels = {4: 512, 8: 512, 16: 512, 32: 512, 64: 512, 128: 256, 256: 128}
     net = SynthesisNet(channels=channels, w_dim=512)
     assert net.num_w_layers >= 7  # at least one w per resolution
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Generator
+# ---------------------------------------------------------------------------
+from p2.src.networks.generator import Generator, GeneratorConfig
+
+
+def test_generator_forward_shape():
+    cfg = GeneratorConfig(
+        z_dim=512, w_dim=512,
+        channels={4: 512, 8: 512, 16: 512, 32: 512, 64: 512, 128: 256, 256: 128},
+        mapping_layers=8, mapping_lr_mul=0.01, style_mixing_prob=0.0,
+    )
+    G = Generator(cfg)
+    z = torch.randn(4, 512)
+    rgb = G(z)
+    assert rgb.shape == (4, 3, 256, 256)
+
+
+def test_generator_param_under_40m():
+    cfg = GeneratorConfig(
+        z_dim=512, w_dim=512,
+        channels={4: 512, 8: 512, 16: 512, 32: 512, 64: 512, 128: 256, 256: 128},
+        mapping_layers=8, mapping_lr_mul=0.01, style_mixing_prob=0.9,
+    )
+    G = Generator(cfg)
+    n_params = sum(p.numel() for p in G.parameters())
+    assert n_params < 40_000_000, f"G has {n_params/1e6:.2f}M params > 40M"
+
+
+def test_generator_z_dim_attr():
+    """ONNX export expects G.z_dim == 512."""
+    cfg = GeneratorConfig(
+        z_dim=512, w_dim=512,
+        channels={4: 512, 8: 512, 16: 512, 32: 512, 64: 512, 128: 256, 256: 128},
+        mapping_layers=8, mapping_lr_mul=0.01,
+    )
+    G = Generator(cfg)
+    assert G.z_dim == 512
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Discriminator
+# ---------------------------------------------------------------------------
+from p2.src.networks.discriminator import Discriminator, DiscriminatorConfig
+
+
+def test_discriminator_forward_shape():
+    cfg = DiscriminatorConfig(
+        channels={256: 128, 128: 256, 64: 512, 32: 512, 16: 512, 8: 512, 4: 512},
+        minibatch_std_group=4,
+    )
+    D = Discriminator(cfg)
+    x = torch.randn(8, 3, 256, 256)
+    score = D(x)
+    assert score.shape == (8, 1)
