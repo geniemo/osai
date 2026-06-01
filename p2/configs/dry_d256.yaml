@@ -29,9 +29,9 @@ discriminator:
 training:
   train_zip: p2/data/train_50k_256.zip
   resolution: 256
-  batch_size: 32
-  total_images: 14_000_000
-  num_workers: 8
+  batch_size: 4
+  total_images: 20
+  num_workers: 0
   flip: true
   precision: bf16
 
@@ -52,18 +52,19 @@ training:
   augment: "color,translation"
   augment_prob: 1.0
 
-  ckpt_every: 200_000
-  fid_every: 500_000
+  log_every: 1
+  ckpt_every: 1_000_000
+  fid_every: 1_000_000
   fid_n_samples: 8000
-  sample_every: 50_000
-  sample_n: 64
+  sample_every: 1_000_000
+  sample_n: 16
   sample_seed: 12345
   seed: 42
 
 wandb:
   project: ffhqgen-skku-p2
-  name: d256-stylegan2-scratch
-  mode: online
+  name: dry-test
+  mode: disabled
 
 out:
-  run_dir: p2/runs/d256_main
+  run_dir: p2/runs/dry
