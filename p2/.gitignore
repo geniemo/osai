@@ -1,0 +1,14 @@
+data/
+runs/
+checkpoints/*
+!checkpoints/.gitkeep
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+wandb/
+*.onnx
+*.pth
+*.pt
+!baseline/**/*.pt
+samples/
+.DS_Store

@@ -1,0 +1,69 @@
+generator:
+  z_dim: 512
+  w_dim: 512
+  resolution: 256
+  channels:
+    4: 512
+    8: 512
+    16: 512
+    32: 512
+    64: 512
+    128: 256
+    256: 128
+  mapping_layers: 8
+  mapping_lr_mul: 0.01
+  style_mixing_prob: 0.9
+
+discriminator:
+  resolution: 256
+  channels:
+    256: 128
+    128: 256
+    64: 512
+    32: 512
+    16: 512
+    8: 512
+    4: 512
+  minibatch_std_group: 4
+
+training:
+  train_zip: data/train_50k_256.zip
+  resolution: 256
+  batch_size: 32
+  total_images: 14_000_000
+  num_workers: 8
+  flip: true
+  precision: bf16
+
+  lr_g: 0.002
+  lr_d: 0.002
+  beta1: 0.0
+  beta2: 0.99
+  weight_decay: 0.0
+
+  r1_gamma: 10.0
+  r1_lazy_every: 16
+  pl_weight: 2.0
+  pl_lazy_every: 8
+  pl_decay: 0.01
+
+  ema_kimg: 20
+
+  augment: "color,translation"
+  augment_prob: 1.0
+
+  ckpt_every: 200_000
+  fid_every: 500_000
+  fid_n_samples: 8000
+  sample_every: 50_000
+  sample_n: 64
+  sample_seed: 12345
+  seed: 42
+
+wandb:
+  project: ffhqgen-skku-p2
+  name: d256-stylegan2-scratch
+  mode: online
+
+out:
+  run_dir: runs/d256_main
