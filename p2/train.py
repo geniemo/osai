@@ -78,6 +78,10 @@ def main():
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--total-images", type=int, default=None)
+    parser.add_argument("--train-zip", type=Path, default=None,
+                        help="Override cfg['training']['train_zip'].")
+    parser.add_argument("--run-dir", type=Path, default=None,
+                        help="Override cfg['out']['run_dir'].")
     parser.add_argument("--new-wandb-run", action="store_true")
     args = parser.parse_args()
 
@@ -85,6 +89,10 @@ def main():
     train_cfg = cfg["training"]
     if args.total_images is not None:
         train_cfg["total_images"] = args.total_images
+    if args.train_zip is not None:
+        train_cfg["train_zip"] = str(args.train_zip)
+    if args.run_dir is not None:
+        cfg["out"]["run_dir"] = str(args.run_dir)
 
     set_seed(train_cfg["seed"])
     torch.set_float32_matmul_precision("high")
