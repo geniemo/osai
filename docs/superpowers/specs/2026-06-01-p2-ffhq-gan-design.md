@@ -2,384 +2,456 @@
 
 **Date**: 2026-06-01
 **Deadline**: 2026-06-09 23:59 (이메일 제출, khshim@skku.edu)
-**Strategy**: C — 하이브리드 (256 fine-tune → 512 native → 1024 native short phase)
-**Workflow**: 데스크탑 dry-run만, Colab Pro+ single resumable long run
+**Strategy**: **D-256** — StyleGAN2-style 256 native scratch + bilinear 1024 wrapper
+**Hardware**: Colab Pro+ **A100** (952 units → ~79h 가용)
+**Fallback policy**: D-256 학습 실패 시 사용자와 별도 결정 (옵션 C — baseline 확장 — 을 그 시점에 구체화)
 
 ---
 
 ## 1. 목표와 제약
 
 ### 점수 목표
-- 현실적 목표: **FID 45~50 → 8점**, 최대 욕심 FID <45 → 9점
-- baseline 무손실(FID 66.1, 4점) + 추가 4~5점 = 안전선
-- 학생 quality 점수는 1024 native 디테일로 평균 이상 노림
+- **현실 목표**: FID 5~15 (256 native, bilinear 1024 후) → FID 점수 **10점** (FID < 40 구간)
+- 총점 목표 **28~33점 / 35**, 기댓값 27~28점
+- 단순화/단일-config 전략으로 분산 줄이고 학습 시간 79h 풀로 활용
 
 ### Hard 제약 (project02.pdf)
-- Generator ≤ 40M params (초과 시 5점 0)
-- z: 512-dim, output: 3×1024×1024
-- valid/test 학습 금지, 외부 데이터 금지, pretrained 금지
+- Generator ≤ **40M params** (초과 시 5점 0). StyleGAN2 256 G는 ~24M으로 안전.
+- z: 512-dim, output: 3×1024×1024 (bilinear wrapper로 256→1024)
+- valid/test 학습 금지, 외부 데이터 금지, **pretrained 금지**
 - 허용 lib: PyTorch, TorchVision, OpenCV/PIL/skimage/matplotlib, WandB, pytorch-fid
-- 금지 lib: HuggingFace, Lightning, Accelerate, Albumentations 등 third-party
-- 기존 repo 시작 금지 (단, 교수님 제공 baseline은 활용 가능)
+- 금지: HuggingFace, Lightning, Accelerate, Albumentations
+- 교수님 제공 baseline은 활용 가능하나 **D-256 path에서는 사용 안 함** (StyleGAN과 ResNet baseline은 weight 호환 X)
 
 ### 제출
 - `2020314315_project02.zip` = `src/` + `checkpoints/model.pth` + `2020314315_project02_report.pdf` (6p, 11pt) + `pyproject.toml` + `README.md`
-- README에 학습/생성 방법 명시
+- README에 학습/생성 방법 + 사용한 GPU(A100) 명시
 - Generator만 제출 (Discriminator 제외)
-- 리더보드는 별도 ONNX 제출: `(B,512) → (B,3,1024,1024)`
+- 리더보드 별도 ONNX 제출: `(B,512) → (B,3,1024,1024)` (256 native G + bilinear wrapper)
 
 ---
 
-## 2. 아키텍처
+## 2. 아키텍처: StyleGAN2 (skip-G, modulated conv)
 
-### Generator (총 21.6M 예상, 40M 한참 미만)
+256 native scratch. baseline ResNet GAN과는 완전히 다른 아키텍처.
 
-baseline G256(21.2M)을 그대로 받고 끝단에 두 블록 추가. 채널은 baseline의 halving 패턴을 깨고 **고해상도에 더 많이 할당** (저해상도는 baseline 그대로 두므로 transfer-init이 자연스러움).
-
-```
-resolutions: [4, 8, 16, 32, 64, 128, 256, 512, 1024]
-channels:
-  4: 512, 8: 512, 16: 512, 32: 512,    # baseline (변경 X)
-  64: 256, 128: 128, 256: 64,           # baseline (변경 X)
-  512: 64, 1024: 32                    # NEW
-attention_resolutions: [32]            # baseline 유지
-norm_type: gn, gn_groups: 32
-```
-
-추가되는 모듈:
-- `ResBlockUp(64→64)` 256→512 (new): conv1 3×3 64×64 + conv2 3×3 64×64 + skip Identity = ~73K
-- `ResBlockUp(64→32)` 512→1024 (new): conv1 64×32 + conv2 32×32 + skip 1×1 64→32 = ~30K
-- 새 `to_rgb`: Conv2d(32, 3, k=3) = ~0.9K
-- 새 `out_norm`: GroupNorm(32, 32) = 64
-
-총 추가 ≈ 105K. 기존 to_rgb(64→3) + out_norm(GN64)은 256 phase에서만 사용되고 512+ phase에서는 비활성화 (혹은 제거).
-
-**최종 G ≈ 21.3M params**, 40M 대비 18.7M 여유 ⇒ 필요시 ch[512]/ch[1024]를 더 늘릴 수 있음 (예: 96/48까지 안전).
-
-### Discriminator (대칭 확장)
+### Generator (StyleGAN2 skip generator)
 
 ```
-resolutions: [1024, 512, 256, 128, 64, 32, 16, 8, 4]
-channels:
-  1024: 32, 512: 64,                   # NEW (G 대칭)
-  256: 64, 128: 128, 64: 256,           # baseline
-  32: 512, 16: 512, 8: 512, 4: 512     # baseline
-use_spectral_norm: true
-minibatch_std_group: 4
-attention_resolutions: [32]
+z (512) → MappingNet → w (512)
+
+const 4×4 (학습 가능 input) → Synthesis stages:
+  4 → 8 → 16 → 32 → 64 → 128 → 256
+각 stage: ModulatedConv (style=w_i) → AddNoise → BiasAct(LeakyReLU 0.2 + √2)
+각 stage end: ToRGB(modulated 1×1, style=w_i) → bilinear upsample → 이전 RGB 누적 (skip)
+
+최종 RGB at 256×256, range [-1, 1] (tanh 안 씀 — StyleGAN 관례)
 ```
 
-- `ResBlockDown(32→64)` 1024→512 (new): SN 적용, ~30K
-- `ResBlockDown(64→64)` 512→256 (new): ~73K
-- 새 `from_rgb`: Conv2d(3, 32, k=3) = ~0.9K
-- baseline의 from_rgb(3→64)는 256 phase에서만 사용
+### MappingNet
+- 8 layers, FC 512→512
+- LeakyReLU(0.2) + √2 gain
+- **LR multiplier 0.01** (필수, 빠뜨리면 발산)
+- Equalized LR 적용
 
-총 D ≈ 20.3M. D는 hard threshold 없으므로 자유롭게 확장 가능. 필요시 ch[1024]/ch[512]를 64/128로 키워 capacity 보강.
+### Channels (resolution → channels)
+StyleGAN2 official FFHQ-256 패턴 적용:
+```
+4: 512, 8: 512, 16: 512, 32: 512,
+64: 512, 128: 256, 256: 128
+```
 
-### Phase별 활성 sub-network
+### Param budget (G)
+- MappingNet (8 × 512×512): ~2.1M
+- Const input: 4×4×512 = 8K
+- Synthesis blocks (modulated 3×3 conv × 2 per stage + noise scale + bias):
+  - 4: only style + bias (no upsample), 512×512×9 ≈ 2.4M
+  - 8: 1 up + 1 same = 2× 512×512×9 = 4.7M
+  - 16: 4.7M
+  - 32: 4.7M
+  - 64: 4.7M
+  - 128: 512×256×9 + 256×256×9 = 1.2M + 0.6M = 1.8M
+  - 256: 256×128×9 + 128×128×9 = 0.3M + 0.15M = 0.45M
+- ToRGB (modulated 1×1 per stage): 약 0.5M total
+- AddNoise scale, bias: ~10K
+- **합계 ≈ 26M params** (40M 한참 미만)
 
-Phase는 **resolution을 켰다 끄는** 방식으로 동작:
+### Discriminator (StyleGAN2 residual)
 
-| Phase | G output | D input | active G modules | active D modules |
-|---|---|---|---|---|
-| 1 (256 ft) | 256 | 256 | baseline 그대로 | baseline 그대로 |
-| 2 (512 main) | 512 | 512 | baseline + 256→512 block + 새 to_rgb_512 | from_rgb_512 + 512→256 block + baseline 이후 stage |
-| 3 (1024 sharp) | 1024 | 1024 | baseline + 256→512 + 512→1024 + to_rgb_1024 | from_rgb_1024 + 1024→512 + 이후 |
+```
+RGB 256×256 → FromRGB → Conv stages:
+  256 → 128 → 64 → 32 → 16 → 8 → 4
+각 stage: ResBlockDown (conv 3×3 → conv 3×3 → avgpool 2×) with √2 residual scale
+MinibatchStd (group 4) at 4×4
+FinalConv 3×3 + FinalLinear → scalar
+```
 
-phase 전환 시:
-- G: 기존 to_rgb를 떼고 새 to_rgb를 붙임 (random init), 새 ResBlockUp도 random init
-- D: 대칭으로 from_rgb 교체, 새 ResBlockDown random init
-- baseline 부분 weights는 그대로 유지
+- Spectral Norm 미적용 (StyleGAN2 관례: R1 regularization으로 충분)
+- Equalized LR 적용
+- 채널: G와 대칭
+- **D ≈ 24M params** (D는 hard threshold 없음)
+
+### 핵심 구현 요소 체크리스트
+
+- [x] **Equalized learning rate** (모든 Conv2d, Linear에 runtime scale = He init)
+- [x] **Modulated conv** (per-sample weight modulation + demodulation, group conv 트릭)
+- [x] **Mapping LR multiplier 0.01**
+- [x] **Skip-G ToRGB sum** (각 stage의 RGB를 bilinear upsample 후 누적)
+- [x] **AddNoise per layer** (learnable scale)
+- [x] **BiasAct** (bias + leakyReLU + √2 gain)
+- [x] **MinibatchStd** at D's 4×4 (group 4)
+- [x] **Path Length Regularization** for G (lazy every 8 G steps, target ~ EMA)
+- [x] **R1 Regularization** for D (lazy every 16 D steps, γ=10)
+- [x] **EMA G** for sampling (half-life by image count)
+- [x] **Style mixing** at training (prob 0.9, random crossover layer)
+- [x] **Truncation trick** at inference (ψ=0.7) — optional, FID 측정 시 ψ=1.0
 
 ---
 
-## 3. 학습 일정 (Phase-driven training)
+## 3. 학습 일정 (D-256 단일 phase)
 
-### Phase 1: 256 fine-tune (warm-up)
-- **목적**: optimizer/EMA 상태 재구축, DiffAug + R1 학습 흐름 확인. baseline은 이미 5M images 학습됨 → 짧게.
-- **데이터**: `train_50k_256.zip`
-- **batch_size**: 64
-- **이미지 수**: **150k** (~2k step)
-- **init**: baseline `ffhq256_baseline.pt` → strict load (G/D/G_ema)
-- **종료 조건**: 150k images 도달 → phase 전환
+phase 없음. 단일 256 native config로 단일 학습.
 
-### Phase 2: 512 native main (핵심 품질 단계)
-- **목적**: 1024 디테일의 70%가 결정되는 메인 단계
-- **데이터**: `train_50k_512.zip`
-- **batch_size**: 32 (L4 24GB 기준 안전)
-- **이미지 수**: **1.2M**
-- **init**: Phase 1 final ckpt에서 256까지 그대로, 256→512 ResBlockUp + 새 to_rgb는 random init. D 측 대칭.
-- **종료 조건**: 1.2M images 도달
+### 핵심 hyperparameters (StyleGAN2-ADA 공식 + baseline 환경 조합)
 
-### Phase 3: 1024 sharpening (short)
-- **목적**: 고해상도 디테일 마무리. 1024 학습은 메모리/속도 부담 크므로 단계 길이 짧게.
-- **데이터**: `train_50k_1024-003.zip`
-- **batch_size**: 8 (L4 24GB 기준)
-- **이미지 수**: **300k**
-- **init**: Phase 2 final ckpt에서 512까지 그대로, 512→1024 ResBlockUp + 새 to_rgb random init. D 대칭.
-- **종료 조건**: 300k images 도달
-
-### 총 이미지 예산
-- ~1.65M images 학습
-- L4 throughput 추정 (fp32, single GPU):
-  - 256/batch64: ~150 img/s → 150k images ≈ 17분
-  - 512/batch32: ~40 img/s → 1.2M images ≈ 8.3시간
-  - 1024/batch8: ~7 img/s → 300k images ≈ 12시간
-- 합계 약 **21시간** + Colab 세션 reconnect overhead. 9일 일정에 충분.
-
-### Hyperparameters (baseline에서 그대로, 변경 금지)
 ```yaml
-lr_g: 1e-3
-lr_d: 1e-3
-beta1: 0.0
-beta2: 0.9          # 0.99 X
-weight_decay: 0.0
-r1_gamma: 10.0
-r1_lazy_every: 16
-grad_clip_g: 10.0
-grad_clip_d: 100.0  # SN으로 사실상 무한
-ema_half_life: 10_000
-precision: fp32     # bf16은 phase 2 안정성 검증 후 옵션
-augment: color,translation
-flip: true
-sample_seed: 12345
-seed: 42
+generator:
+  z_dim: 512
+  w_dim: 512
+  resolution: 256
+  channels: {4: 512, 8: 512, 16: 512, 32: 512, 64: 512, 128: 256, 256: 128}
+  mapping_layers: 8
+  mapping_lr_mul: 0.01
+  style_mixing_prob: 0.9
+
+discriminator:
+  resolution: 256
+  channels: {256: 128, 128: 256, 64: 512, 32: 512, 16: 512, 8: 512, 4: 512}
+  minibatch_std_group: 4
+
+training:
+  train_zip: data/train_50k_256.zip
+  resolution: 256
+  batch_size: 32                      # A100 40GB + mixed precision
+  total_images: 14_000_000            # 79h × ~180 img/s 추정 상한
+  num_workers: 8
+  flip: true
+  precision: bf16                     # A100에서 필수
+
+  lr_g: 0.002                         # StyleGAN2 official
+  lr_d: 0.002
+  beta1: 0.0
+  beta2: 0.99
+  weight_decay: 0.0
+
+  r1_gamma: 10.0
+  r1_lazy_every: 16
+  pl_weight: 2.0
+  pl_lazy_every: 8
+  pl_decay: 0.01                      # PL target EMA decay
+
+  grad_clip_g: 0.0                    # StyleGAN은 보통 clip 안 함
+  grad_clip_d: 0.0
+
+  ema_kimg: 20                        # half-life ≈ 20k images (StyleGAN2 default for 256)
+
+  augment: diffaug                    # 'color,translation' (cutout 제외)
+  augment_prob: 1.0                   # DiffAug는 항상 적용
+
+  ckpt_every: 200_000                 # 매 200k images
+  fid_every: 500_000                  # 매 500k images
+  fid_n_samples: 8000
+  sample_every: 50_000
+  sample_n: 64
+  sample_seed: 12345
+  seed: 42
+
+wandb:
+  project: ffhqgen-skku-p2
+  name: d256-stylegan2-scratch
+  mode: online
+
+out:
+  run_dir: runs/d256_main
 ```
 
-phase 전환 시 optimizer는 새로 만든다 (새 블록의 1st moment 초기화). 이전 phase의 baseline 부분 optimizer state는 의도적으로 버린다 (해상도 변경 = grad 통계 변화).
+### 학습량 예산
+- 14M images / 32 batch = ~437k steps
+- A100 mixed precision throughput 추정: **150~200 img/s @ 256 batch 32**
+- 14M / 175 = ~22h GPU time (이론). Colab overhead 포함해서 **~25h**
+- 79h 풀로 쓰면 25M images까지 가능. 14M로 잡은 건 보수적 추정 (수렴이 빠르면 일찍 중단).
+- **stopping criteria**: FID가 5회 연속 측정에서 0.5 미만 변화 (수렴 신호)
+
+### 학습 안정성 측정 (WandB)
+- `loss/D_total`, `loss/G`, `loss/R1`, `loss/PL`
+- `D_out/real_mean`, `D_out/fake_mean`
+- `grad_norm/G`, `grad_norm/D`
+- `pl_mean_path_length` (PL 정규화 target)
+- `throughput/imgs_per_sec`
+- `fid` (커스텀 측정 후 log)
+- samples grid 50k images마다 wandb image
 
 ---
 
-## 4. 코드베이스 구조
+## 4. ABORT GATE (D-256 → C 별도 구체화 전환 기준)
 
-`p2/` 디렉토리 내부:
+다음 중 하나라도 발생 시 즉시 학습 중단:
+
+| 시점 | 조건 | 의미 |
+|---|---|---|
+| 1h dry-run | throughput < 100 img/s @ bs32 mixed | 구현 비효율, 시간 부족 누적 |
+| 6h (~3M images) | FID > 60 | 학습 망가짐 |
+| 12h (~7M images) | FID > 30 | 수렴 속도 너무 느림 |
+| 언제든 | G loss sustained > 5 (5 logging window 연속) | 학습 발산 |
+| 언제든 | grad_norm/G or grad_norm/D > 100 sustained | gradient explosion |
+| 언제든 | NaN/Inf in loss/grad | 즉시 abort |
+| 언제든 | reproducible OOM (batch 16/8까지 줄였는데도) | 메모리 모델 결함 |
+
+abort 시:
+1. WandB run finalize
+2. 마지막 정상 ckpt 보존
+3. 사용자에게 abort 사유 + WandB 링크 보고
+4. 사용자 결정 → 옵션 C(baseline 확장) 별도 구체화 시작
+
+---
+
+## 5. 코드베이스 구조
 
 ```
 p2/
-├── CLAUDE.md                # p2 특화 지침 (root CLAUDE.md에 add-on)
-├── README.md                # 제출용 README (학습/생성 방법)
-├── pyproject.toml           # 제출 의존성 명세
-├── data/                    # gitignore. train_*.zip, valid_*.zip 압축 그대로
-├── checkpoints/             # gitignore (.gitkeep만 유지)
-│   ├── ffhq256_baseline.pt  # 교수님 제공
-│   └── model.pth            # 제출용 final ckpt (Phase 3 EMA)
-├── runs/                    # gitignore. WandB local, samples grid
+├── CLAUDE.md                       # p2 특화 지침 (root CLAUDE.md에 add-on)
+├── README.md                        # 제출용 (학습/생성 방법, 사용 GPU)
+├── pyproject.toml                   # 제출 의존성
+├── data/                           # gitignore. train_50k_256.zip 사용
+├── checkpoints/                    # gitignore (.gitkeep만 유지)
+│   ├── ffhq256_baseline.pt         # 교수님 제공 (D path에서 사용 안 함, fallback 대비 보관)
+│   └── model.pth                   # 제출용 (최종 EMA G state)
+├── runs/                           # gitignore. WandB local, samples
 ├── configs/
-│   ├── phase1_256.yaml
-│   ├── phase2_512.yaml
-│   └── phase3_1024.yaml
+│   └── d256.yaml                   # 단일 config
 ├── src/
 │   ├── __init__.py
-│   ├── model.py             # baseline model.py 확장 (Generator/Discriminator/EMA)
-│   ├── losses.py            # baseline 그대로 (ns_logistic + r1)
-│   ├── augment.py           # baseline DiffAug 그대로
-│   ├── dataset.py           # baseline ZipImageDataset 그대로 + valid_zip 옵션
-│   ├── transfer.py          # NEW: phase 전환 시 가중치 부분 로딩
-│   ├── fid.py               # NEW: pytorch-fid wrapper, real-stats cache
-│   └── utils.py             # seed/io/timing helpers
-├── train.py                 # baseline train.py 확장 (phase 인식, transfer init)
-├── generate.py              # baseline 그대로 (sample grid)
-├── export_onnx.py           # baseline 그대로
-├── eval_fid.py              # NEW: ckpt → samples 디렉토리 → FID 계산
-├── package_submission.py    # NEW: p1 패턴, zip 패키징
+│   ├── networks/
+│   │   ├── __init__.py
+│   │   ├── ops.py                  # EqualLinear, EqualConv2d, ModulatedConv2d, AddNoise, BiasAct
+│   │   ├── mapping.py              # MappingNet
+│   │   ├── synthesis.py            # SynthesisNet (skip-G structure)
+│   │   ├── generator.py            # Generator = Mapping + Synthesis
+│   │   ├── discriminator.py        # ResBlockDown D
+│   │   └── ema.py                  # EMA G (image-count half-life)
+│   ├── losses.py                   # ns_logistic_g/d, r1_penalty, path_length_penalty
+│   ├── augment.py                  # DiffAug color+translation (baseline 그대로)
+│   ├── dataset.py                  # ZipImageDataset (baseline 그대로)
+│   ├── fid.py                      # pytorch-fid wrapper, real-stats cache
+│   ├── transfer.py                 # 빈 placeholder (D path에서는 불필요, C fallback 대비)
+│   └── utils.py                    # seed/io/timing helpers
+├── train.py                        # 단일 진입점
+├── generate.py                     # sample grid (지정 ckpt → png)
+├── eval_fid.py                     # ckpt → 8k samples → FID
+├── export_onnx.py                  # G(256 native) + bilinear 1024 wrapper → submission.onnx
+├── package_submission.py           # zip 패키징
 └── colab/
-    ├── COLAB.md             # Colab 운영 가이드 (resume, drive mount)
-    └── colab_p2_main.ipynb  # 단일 노트북, phase 순차 실행
+    ├── COLAB.md                    # Colab 운영 가이드 (Drive mount, A100 reconnect/resume)
+    └── colab_p2_d256.ipynb         # 단일 노트북
 ```
 
-p1 폴더와 동등한 구조를 유지하여 일관성 확보. 기존 baseline zip의 `src/`, `train.py`, `export_onnx.py`는 **그대로 시작 코드**로 사용하고 변경분만 추가/수정.
-
-### 변경 vs 유지
-
-| 파일 | 정책 |
-|---|---|
-| `src/model.py` | baseline 그대로 + 새 GeneratorConfig 한 줄 추가. 빌딩 블록 (ResBlockUp/Down, SelfAttn, MinibatchStd, EMA) 수정 X |
-| `src/losses.py` | 그대로 |
-| `src/augment.py` | 그대로 |
-| `src/dataset.py` | 그대로 (valid_zip은 별도 import에서 처리) |
-| `train.py` | phase 인식 + transfer-init 호출만 추가. CLI에 `--phase {1,2,3}` 옵션 |
-| `export_onnx.py` | 그대로. config-driven Generator 인스턴스화에 대응되도록 main 함수만 작은 수정 |
-| `generate.py` | 그대로 |
-| 신규 `src/transfer.py` | 핵심 — phase N+1로 갈 때 phase N의 G/D state를 부분 로드 |
-| 신규 `src/fid.py` | pytorch-fid CLI 호출 래퍼, 실측 stats 캐시 |
-| 신규 `eval_fid.py` | ckpt → 8k samples → FID 측정 (자기 점검용) |
-| 신규 `package_submission.py` | p1 패턴 따라 zip 패키징 |
+p1 폴더와 일관된 구조. baseline의 `src/{model,losses,augment,dataset}.py`는 별도 보관(`p2/baseline/`)하여 fallback 시 참조용으로 유지.
 
 ---
 
-## 5. Phase 전환 (transfer-init)
-
-`src/transfer.py`의 두 핵심 함수:
-
-### `load_g_partial(G_new, prev_ckpt)`
-- `prev_ckpt["G_state"]` (or `G_ema_state`) 의 키 중 새 G와 모양이 일치하는 키만 load
-- shape mismatch나 새 키 (e.g. `stages.N`, `to_rgb`, `out_norm`)는 random init 유지
-- 명시적 로깅: "Loaded X keys, skipped Y keys (shape mismatch / missing in target)"
-
-### `load_d_partial(D_new, prev_ckpt)`
-- 동일. D는 resolutions 순서가 역순임에 주의 (1024→...→4)
-- 새 from_rgb와 새 ResBlockDown은 random init
-
-phase 전환은 노트북 셀에서 명시적 sequence로:
+## 6. Path Length Regularization 상세 (StyleGAN2 핵심)
 
 ```python
-# phase 1 → phase 2
-ckpt_p1 = torch.load("runs/p1/final.pt", weights_only=True)
-G2 = Generator(GeneratorConfig.from_dict(yaml.load(phase2_cfg)["generator"]))
-D2 = Discriminator(...)
-G2_ema = EMA(G2, half_life=10_000)
-load_g_partial(G2, ckpt_p1)
-load_g_partial(G2_ema.shadow, ckpt_p1)  # EMA도 같은 baseline에서 출발
-load_d_partial(D2, ckpt_p1)
-# 새 optimizer
-# train.py 호출 (resume 아님 — 새 phase의 첫 launch)
+def path_length_penalty(G, w, pl_mean: torch.Tensor, decay: float = 0.01):
+    """Lazy PL — 8 G steps마다.
+    
+    w: (B, num_layers, w_dim) mapping 출력
+    pl_mean: running EMA of path lengths (scalar, persistent buffer)
+    """
+    noise = torch.randn_like(G_out) / sqrt(H * W)
+    pl_grads = autograd.grad(
+        (G(w) * noise).sum(), w, create_graph=True
+    )[0]
+    pl_lengths = pl_grads.square().sum(dim=2).mean(dim=1).sqrt()
+    pl_mean_new = pl_mean.lerp(pl_lengths.mean(), decay)
+    pl_mean.copy_(pl_mean_new.detach())
+    pl_penalty = (pl_lengths - pl_mean_new).square().mean()
+    return pl_penalty  # 곱하기 pl_weight (2.0) × pl_lazy_every (8)
 ```
 
----
-
-## 6. 데이터 파이프라인
-
-- 학습: `ZipImageDataset` (baseline 그대로)
-- valid: `valid_10k_{256,512,1024}.zip` — FID 측정 시 real-side 통계용
-- **valid는 학습에 절대 사용 안 함** (project02.pdf 제약)
-- 이미지 전처리: `[-1, 1]` 범위, horizontal flip 50%, DiffAug(color+translation)는 D 입력 직전에만
-- num_workers: 8 (Colab은 4로 조정 가능)
+`pl_mean`을 학습 시작 시 0으로 초기화, 점차 lengths의 EMA로 수렴.
 
 ---
 
-## 7. FID 자기 측정 (`src/fid.py`, `eval_fid.py`)
+## 7. Modulated Conv 상세 (StyleGAN2 핵심)
 
-리더보드 FID와 일치시키기 위해 `pytorch-fid`의 Inception V3을 그대로 사용:
+```python
+class ModulatedConv2d(nn.Module):
+    """Per-sample weight modulation + demodulation.
+    
+    Implementation trick: reshape weight as group convolution.
+    """
+    def __init__(self, in_ch, out_ch, kernel, style_dim, demodulate=True, up=False):
+        # weight (out_ch, in_ch, k, k), equalized LR scale
+        # affine: w → style (in_ch) via Linear
+
+    def forward(self, x, w):
+        B, C, H, W = x.shape
+        style = self.affine(w) + 1  # (B, in_ch), bias init 1
+        weight = self.weight * style.view(B, 1, C, 1, 1)  # (B, out_ch, in_ch, k, k)
+        if self.demodulate:
+            d = (weight.square().sum(dim=[2,3,4]) + 1e-8).rsqrt()  # (B, out_ch)
+            weight = weight * d.view(B, -1, 1, 1, 1)
+        # Group conv trick:
+        weight = weight.view(B * self.out_ch, C, k, k)
+        x = x.view(1, B * C, H, W)
+        x = F.conv2d(x, weight, groups=B, padding=k//2)
+        x = x.view(B, self.out_ch, H_out, W_out)
+        if self.up:
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        return x
+```
+
+**check**: ONNX export에 group conv가 dynamic batch에서 잘 trace되는지 확인 필요 (opset 17). 안되면 batch dim 따로 unroll 또는 일반 conv with loop.
+
+---
+
+## 8. 데이터 파이프라인
+
+- 학습: `ZipImageDataset(train_50k_256.zip, flip=True)` — baseline 그대로
+- valid: `valid_10k_256.zip` — FID 측정 시 real-side 통계용
+- valid는 학습에 절대 사용 안 함
+
+### FID real-stats 1회 캐시
 
 ```bash
-# 실 통계 1회 캐시
-python -m pytorch_fid p2/data/valid_10k_256_dir --save-stats p2/checkpoints/fid_stats_256.npz
-python -m pytorch_fid p2/data/valid_10k_512_dir --save-stats p2/checkpoints/fid_stats_512.npz
-python -m pytorch_fid p2/data/valid_10k_1024_dir --save-stats p2/checkpoints/fid_stats_1024.npz
+# valid_10k_256.zip → 디렉토리로 풀고 (또는 zip-stream으로 직접)
+python -m pytorch_fid /path/to/valid_dir --save-stats p2/checkpoints/fid_stats_256.npz
 ```
 
-각 phase 후반에서 EMA G로 8k samples 생성 → 디렉토리 저장 → `pytorch_fid` 호출. valid는 학습에 안 쓰므로 FID 측정에는 valid set이 적합 (분포가 train과 동일).
+이후 self-FID 측정은:
+```bash
+# G로 8k 샘플 dump → 디렉토리
+python eval_fid.py --ckpt runs/d256_main/ckpt_xxx.pt --n 8000 --out /tmp/samples
+python -m pytorch_fid /tmp/samples p2/checkpoints/fid_stats_256.npz
+```
 
-**중요**: 리더보드 FID는 valid set 기준일 가능성이 높음 (test는 grader 전용). 자체 측정은 valid 사용으로 통일.
-
-각 phase에서 측정 주기:
-- Phase 1: 종료시 1회 (sanity)
-- Phase 2: 매 200k images마다 (총 6회)
-- Phase 3: 매 100k images마다 (총 3회)
-
-WandB에 FID를 시계열로 log.
+리더보드 FID와의 차이는 ±2~3 예상 (test set vs valid set).
 
 ---
 
-## 8. ONNX 제출 export
+## 9. ONNX 제출 export
 
-baseline `export_onnx.py`의 `SubmissionWrapper`는 bilinear 1024 resize를 항상 적용 → 우리 G가 1024를 native로 내보내도 안전 (resize는 no-op).
+baseline `export_onnx.py`의 `SubmissionWrapper`를 약간 수정:
+- 우리 Generator는 256 native, w 사용. `forward(z)` 직접 받음
+- StyleGAN G의 forward는 내부에서 mapping → synthesis → RGB
+- Wrapper는 G output을 bilinear 1024로 resize
 
 ```python
-# 최종 단계
-G = Generator(GeneratorConfig.from_dict(phase3_cfg["generator"]))
-state = torch.load("p2/checkpoints/model.pth", weights_only=True)["G_ema_state"]
-G.load_state_dict(state)
-export_to_onnx(G, "p2/checkpoints/model.onnx")
+class SubmissionWrapper(nn.Module):
+    def __init__(self, G):
+        super().__init__()
+        self.G = G
+    def forward(self, z):
+        x = self.G(z)  # (B, 3, 256, 256), range [-1, 1]
+        x = F.interpolate(x, size=(1024, 1024), mode='bilinear', align_corners=False)
+        return x
 ```
 
-검증:
-```python
-import onnxruntime as ort
-sess = ort.InferenceSession("p2/checkpoints/model.onnx")
-out = sess.run(None, {"z": np.random.randn(4, 512).astype(np.float32)})[0]
-assert out.shape == (4, 3, 1024, 1024)
-assert -1.05 <= out.min() and out.max() <= 1.05  # tanh + 약간의 fp 오차
-```
-
-리더보드 제출 시점 = phase 3 종료 직후. 5/20~6/9 사이 교수님이 occasional quality score를 매길 수 있다고 했으므로, **phase 2 종료 시점에 1회 중간 ONNX 제출**도 고려.
+ONNX export 위험: ModulatedConv의 group conv가 dynamic batch에서 opset 17에 trace 가능한지 D1 dry-run에서 확인. 안 되면 export-only 모드에서 batch=1 unroll.
 
 ---
 
-## 9. Resumable training (Colab 핵심)
+## 10. Resumable training (Colab 핵심)
 
-baseline `train.py`는 이미 `--resume`을 정확히 구현:
-- G/D/G_ema/optG/optD/RNG/wandb_run_id 모두 복원
-- async_save_checkpoint로 비차단 저장
+baseline `train.py`의 resume 패턴 거의 그대로 재활용:
+- ckpt에 `G_state, D_state, G_ema_state, optG_state, optD_state, rng_state, wandb_run_id, pl_mean (PL target buffer), images_seen, step`
+- `--resume <ckpt>`로 bit-for-bit 복원
+- 24h Colab session 만료 시 자동 disconnect → 재접속 후 `--resume` 한 줄로 재개
 
-추가 신경 쓸 점:
-- Colab disconnect 시 마지막 ckpt만 살아남음 → `ckpt_every: 50_000` 으로 빈도 ↑ (baseline 100k → 50k)
-- Drive 마운트 시 동기화 지연 → run_dir는 Colab 로컬에 두고 주기적으로 `cp` 또는 `rsync`로 Drive에 백업
-- 학습 launch 셀과 resume 셀을 노트북에서 분리 (헷갈림 방지)
-
-phase 전환은 resume이 아니라 **새 phase의 first launch** — `--init-from` 대신 `transfer.load_*_partial` 사용. CLI 인터페이스에 `--phase-init <prev_ckpt>` 옵션 추가.
-
----
-
-## 10. WandB
-
-- 단일 project: `ffhqgen-skku-p2`
-- run 3개:
-  - `p2-phase1-256-ft`
-  - `p2-phase2-512-native`
-  - `p2-phase3-1024-sharp`
-- 각 run에 phase 별 cfg 전체 dump (`wandb.config = cfg`)
-- 주요 metric: `loss/D_total`, `loss/G`, `loss/R1`, `D_out/real_mean`, `D_out/fake_mean`, `grad_norm/G`, `grad_norm/D`, `throughput/imgs_per_sec`, `fid` (커스텀 측정 후 log)
-- samples grid를 phase별 50k images마다 wandb image로 업로드
-
-p1 패턴 따라 리포트에 WandB overview 캡처 첨부 (학생 quality 점수 + 리포트 5점 직결).
+**추가 안전장치**:
+- `ckpt_every: 200_000` → 매 200k images (~20분에 1회)
+- 학습 시작 시 마지막 ckpt 자동 감지 + resume prompt
+- Drive backup: 매 1M images마다 last 3 ckpts를 Drive에 rsync
 
 ---
 
-## 11. Schedule (9일)
+## 11. WandB
+
+- project: `ffhqgen-skku-p2`
+- run: `d256-stylegan2-scratch` (단일 run)
+- config: cfg 전체 dump
+- main metrics:
+  - `loss/D_total`, `loss/D_real`, `loss/D_fake`, `loss/G`
+  - `loss/R1`, `loss/PL`
+  - `pl_mean_path_length`
+  - `D_out/real_mean`, `D_out/fake_mean`
+  - `grad_norm/G`, `grad_norm/D`
+  - `throughput/imgs_per_sec`
+  - `fid` (커스텀, 500k마다)
+- samples grid 50k images마다 wandb image
+- 리포트용 overview 캡처 1장 (학습 종료 시)
+
+---
+
+## 12. Schedule (9일)
 
 | Day | Date | 작업 |
 |---|---|---|
-| D1 | 06-01 (오늘) | 설계 문서 confirm → 코드 골격 → 5분 데스크탑 dry-run (256 ft 단계 한 step) → Colab Phase 1 launch |
-| D2 | 06-02 | Phase 1 완료 (자동) → Phase 2 launch. 데스크탑에서 리포트 골격 작성 시작 |
-| D3~D6 | 06-03 ~ 06-06 | Phase 2 학습 (반나절~1일). Colab disconnect 시 24h마다 resume. 매일 FID 측정/WandB 확인. 리포트 본문 작성 |
-| D7 | 06-07 | Phase 2 완료 → Phase 3 launch. 중간 ONNX 1회 leaderboard 제출 (quality score 노출용) |
-| D8 | 06-08 | Phase 3 완료 → 최종 FID 측정 → ONNX 재export → 리더보드 최종 갱신. 리포트 마무리. 제출 zip 빌드 dry-run |
-| D9 | 06-09 | 최종 검증 + 이메일 제출 (cushion 4시간 이상 확보) |
+| **D1** | 06-01 (오늘) | 코드 작성 (StyleGAN2 G/D/Mapping/ModConv/EMA/PL/R1) + 데스크탑 5분 dry-run + Colab launch |
+| D2 | 06-02 | 학습 모니터링 (1h throughput / 6h FID / 12h FID gate). 정상이면 계속. WandB 매일 확인. 리포트 골격 작성 |
+| D3 | 06-03 | 학습 ~36h 누적. 8M images 도달 예상. FID 측정 |
+| D4 | 06-04 | 학습 ~60h 누적. 11M images 도달 예상. FID 측정 |
+| D5 | 06-05 | 학습 ~75h 누적. 13~14M images 도달. 수렴 확인 |
+| D6 | 06-06 | 학습 종료 (또는 수렴 조기 종료). 최종 FID 측정. ONNX export 검증 |
+| D7 | 06-07 | 중간 리더보드 제출. 리포트 본문 작성 (architecture, recipe, FID curve, failure cases) |
+| D8 | 06-08 | 리포트 마무리, WandB 캡처, 제출 zip dry-run |
+| D9 | 06-09 | 최종 검증 + 이메일 제출 (cushion ~6h) |
 
-각 phase 학습은 자동 → 사람 시간은 거의 들지 않음. 사람 시간의 80%는 리포트 + 코드 정리 + WandB capture.
-
----
-
-## 12. 위험과 대응
-
-| 위험 | 대응 |
-|---|---|
-| Colab disconnect로 ckpt 손실 | ckpt_every=50k + Drive backup 주기 + 마지막 ckpt name 노트북 셀에 기록 |
-| Phase 2 학습 divergence | baseline hyperparam 유지가 1차 방어. 발생 시 즉시 stop, 이전 ckpt에서 lr 50% 줄여 재개 (single retry). 그래도 실패 시 phase 2 길이를 줄이고 phase 3 skip → bilinear 1024로 제출 (= 옵션 A로 fallback) |
-| 1024 학습 OOM | batch 4로 감축, 그래도 안 되면 1024 phase skip → ONNX wrapper bilinear (옵션 A 동작) |
-| Param > 40M (실수) | train.py 시작 시 assert, package_submission.py에서도 재확인 |
-| ONNX export 실패 | 데스크탑에서 phase 1 ckpt로 사전 검증 (D1 dry-run에 포함) |
-| 학생 quality 점수 외곡 | 5/20~6/9 occasional scoring 단계에 중간 ONNX 1회 제출 (D7) → 거기서 받는 피드백으로 phase 3 마무리 조정 |
-| Colab Pro+ 크레딧 소진 | 데스크탑 RTX 5070 Ti를 백업으로 보관 (사용자가 켜두기만 하면 됨). 단 정책상 데스크탑 사용은 사용자 승인 후 |
+사람 시간의 대부분은 D6~D9의 리포트 + 패키징. 학습은 자동.
 
 ---
 
-## 13. 코드 품질 / 리포트 5+5점 체크리스트
+## 13. 위험과 대응
 
-### 코드 5점 (project02.pdf 기준)
-- [x] Clear module structure → p1과 동일한 구조
-- [x] Reproducible training and evaluation scripts → train.py + eval_fid.py 단일 진입점
-- [x] Proper checkpoint loading and saving → baseline의 검증된 resume 패턴
-- [x] Readable implementation → docstring/타입 보존, baseline 스타일 유지
-- [x] No hard-coded test-set assumptions → 데이터셋 경로는 모두 yaml config
-- [x] Try to use many things learned in class → BN/IN/GN, optimizer, EMA, augmentation, regularization, SN, R1 모두 활용
-
-### 리포트 5점 (6 pages, 11pt)
-- [ ] Model architecture → diagram + channel table
-- [ ] Training recipe → hyperparam 표 + phase별 시간/이미지 수
-- [ ] Validation results → FID 시계열 + best score
-- [ ] Ablation or trial history → 이번엔 ablation 없으나 phase별 FID 곡선이 trial history 역할
-- [ ] Failure case analysis → 학습 후 EMA G로 64 샘플 grid, 실패 케이스 골라 분석 1페이지
-- [ ] WandB evidence → 3 phase overview 캡처 + 시계열 그래프
-
-p1 리포트 패턴(`p1/docs/report.md`)을 base로 재활용.
+| 위험 | 영향 | 대응 |
+|---|---|---|
+| StyleGAN2 구현 정확도 미달 (가장 큰 위험) | 학습 발산/수렴 실패 | 1h dry-run에서 loss/grad/throughput 다 정상 범위 확인. ABORT gate로 빠른 cutting |
+| ModulatedConv ONNX export 실패 | 제출 불가 | D1 dry-run에 ONNX export sanity 포함. 실패 시 batch=1 unroll export |
+| Path Length reg가 NaN 발생 | 학습 정지 | pl_grads에 finite check, NaN 발견 시 해당 step 건너뛰기 (lazy reg이므로 영향 적음) |
+| Colab A100 가용성 (할당 실패) | 학습 시작 못함 | L4로 임시 시작 → A100 가용 시 resume. 단 L4는 throughput 절반 → 학습 시간 부족 가능 |
+| Colab 24h session 만료 | 학습 중단 | resume 즉시 가능. ckpt_every=200k로 손실 최소화 |
+| 컴퓨트 유닛 952 초과 사용 | 학습 강제 종료 | 학습 진행도와 unit 잔량 매일 점검. 70h 시점에 강제 종료 + 그 ckpt로 제출 |
+| Param > 40M (실수) | 5점 0 | train.py 시작 시 assert, package_submission.py에서도 재확인 |
+| bilinear 1024로 FID는 OK인데 학생 quality 점수 낮음 | 학생 quality 1~2점 | 받아들임. StyleGAN의 얼굴 자연스러움이 일부 상쇄 기대 |
+| ADA 미구현으로 FFHQ-50k에서 overfit | FID 정체 | DiffAug로 시작 → 만약 D loss가 너무 빨리 0에 가까워지면 ADA 추가 구현 (시간 여유 있을 때) |
 
 ---
 
-## 14. 의존성 (`pyproject.toml`)
+## 14. 코드 품질 / 리포트 5+5점 체크리스트
 
-baseline 그대로 + 자체 측정용:
+### 코드 5점
+- [x] Clear module structure → `src/networks/{ops,mapping,synthesis,generator,discriminator,ema}.py` 모듈 분리
+- [x] Reproducible training and evaluation scripts → `train.py`, `eval_fid.py` 단일 진입점
+- [x] Proper checkpoint loading and saving → baseline의 검증된 resume 패턴 차용
+- [x] Readable implementation → docstring + 타입 hint
+- [x] No hard-coded test-set assumptions → 데이터셋 경로는 yaml config
+- [x] Try to use many things learned in class → optimizer, EMA, augmentation, regularization (R1, PL), modulation 등
+
+### 리포트 5점 (6 pages, 11pt PDF)
+- [ ] Model architecture → StyleGAN2 diagram + channel table + param count
+- [ ] Training recipe → hyperparam 표 + 79h on A100 + DiffAug + R1 + PL
+- [ ] Validation results → FID 시계열 + 최종 best (자체 측정 + 리더보드)
+- [ ] Ablation or trial history → 이번엔 ablation 없음. 시간순 FID 곡선 1장으로 갈음
+- [ ] Failure case analysis → 학습 후 EMA G 64 샘플 grid에서 실패 케이스 골라 1페이지
+- [ ] WandB evidence → overview 캡처 + 시계열 그래프
+
+p1 리포트 패턴 재활용.
+
+---
+
+## 15. 의존성 (`pyproject.toml`)
+
 ```toml
 [project]
 name = "p2-ffhq-gan"
@@ -395,17 +467,21 @@ dependencies = [
     "onnx>=1.15",
     "onnxruntime>=1.16",
     "pytorch-fid>=0.3",
-    "scipy>=1.11",  # pytorch-fid 의존
+    "scipy>=1.11",
 ]
 ```
 
 ---
 
-## 15. 의사결정 기록 (왜 이렇게 했는지)
+## 16. 의사결정 기록 (왜 이렇게 했는지)
 
-- **C를 선택한 이유**: A는 1024 native가 없어 학생 quality 점수가 baseline 외관에 발이 묶임. B는 progressive 3단계 native 전체 학습이 9일+단일 GPU에 무리. C는 baseline의 head-start를 살리면서 1024 native 디테일을 phase 3 짧은 학습으로 추가 확보.
-- **D(StyleGAN scratch)를 안 한 이유**: baseline 5M-images 학습 가중치를 버려야 함. 9일 + 단일 GPU + 디버깅 사이클 0 환경에서 StyleGAN 재구현은 baseline FID 66.1조차 못 넘길 위험 실재.
-- **Channel halving 규칙(...256:64, 512:32, 1024:16)을 안 따른 이유**: G의 40M 한도까지 18.7M 여유가 있음. 고해상도에 더 많은 채널을 할당하는 게 FID에 유리.
-- **bf16 안 쓰는 이유**: baseline README에 "bf16 trained fine for ~3M images then a late spike was easier to diagnose in fp32"라는 명시. 9일에 디버깅 사이클이 없으므로 안정성 우선.
-- **EMA G로 FID/제출하는 이유**: baseline README와 일치. EMA는 GAN 학습의 지터를 평탄화.
-- **Phase 1 (256 ft)를 굳이 하는 이유**: baseline은 자체 학습이 끝난 상태지만 우리 환경(Colab L4)에서 optimizer 초기화 + DiffAug + R1 흐름이 정상 동작하는지 짧게 확인. 또한 baseline은 EMA half-life 10k 단위로 학습된 상태 — 같은 코드로 짧게 재학습하면 다음 phase 진입 시 weight 분포가 정렬된 상태로 시작.
+- **D-256 단독 (D-1024 안 함)**: 79h를 256에 풀로 투입 → StyleGAN2 FFHQ-256 수렴값(FID 5~10) 도달. bilinear 1024 wrapper는 pytorch-fid의 Inception 299×299 resize 때문에 FID에 미치는 영향 미미. 1024 native는 메모리/속도 압박이 커서 같은 시간에 FID가 더 안 좋게 끝날 위험.
+- **C 옵션을 동시 작성 안 함**: 단일 코드 베이스로 단순화 + 학습 시간 집중. D 실패 시 별도 의사결정 후 C를 그 시점에 구체화.
+- **StyleGAN2 (1) 채택, StyleGAN3 안 함**: StyleGAN3는 alias-free filters로 더 무겁고 학습 더 오래 걸림. 50k 이미지 + 79h A100에서는 StyleGAN2가 sweet spot.
+- **DiffAug로 시작, ADA는 옵션**: DiffAug는 baseline에서 검증됨, 구현 단순. ADA는 적응 augmentation prob 관리 복잡. 학습 안정성 우선.
+- **bf16 mixed precision**: A100에서 fp32 대비 3배 throughput. StyleGAN2-ADA 공식 코드도 mixed precision 표준.
+- **lr 0.002, β2=0.99**: StyleGAN2-ADA 공식 hyperparam. baseline의 lr=1e-3, β2=0.9는 ResNet GAN 기준이라 사용 안 함.
+- **EMA half-life 20k images**: StyleGAN2 default for 256. baseline의 10k는 ResNet GAN의 더 작은 capacity 모델 기준.
+- **Style mixing 0.9**: StyleGAN2 default. disentanglement + 일반화.
+- **Tanh 없음**: StyleGAN2 G는 마지막에 tanh를 안 씀. 출력 범위는 학습으로 [-1, 1] 근방에 수렴.
+- **Truncation trick은 FID 측정 시 ψ=1**: FID 본래 정의에 맞춤. ψ=0.7은 quality assessment 시 사용 가능.

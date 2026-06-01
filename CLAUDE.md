@@ -7,8 +7,8 @@
 OSAI (Open-Source AI Practice) 수업의 작업은 세 머신에 걸쳐 이루어집니다:
 
 - **노트북** (WSL2): 설계, 계획, 팀 구성, 브레인스토밍
-- **데스크탑** (RTX 5070 Ti): 실험 탐색, 다양한 ablation을 통한 최적 솔루션 발견
-- **Colab Pro+** (T4 또는 L4): 공식 제출용 학습 1회 실행 (채점 공정성)
+- **데스크탑** (RTX 5070 Ti): 실험 탐색 / dry-run으로 파이프라인 검증
+- **Colab Pro+**: 공식 제출용 학습. GPU는 과제별 가용 자원과 컴퓨트 유닛 잔량에 따라 선택 (A100/L4/T4). 어떤 GPU를 썼는지는 리포트와 README에 명시.
 
 동기화: Git + GitHub (`github.com/geniemo/osai`). 코드와 Claude 설정(`CLAUDE.md`, `.claude/agents/`, `.claude/settings.json`)은 git으로 관리. `.claude/teams/`, `.claude/tasks/`, `.claude/projects/`는 머신별 독립(gitignore).
 
