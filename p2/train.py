@@ -6,6 +6,8 @@ Modes:
 """
 from __future__ import annotations
 import argparse
+import os
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import threading
 import time
 from dataclasses import asdict
@@ -215,7 +217,10 @@ def main():
         l_d.backward()
 
         if (step + 1) % r1_lazy == 0:
-            l_r1 = r1_lazy * r1_penalty(D, diff_augment(real.float(), augment_policy), gamma=r1_gamma)
+            # R1 memory peak: halve batch to fit small GPUs (e.g. L4 22GB).
+            # StyleGAN2-ADA does the same; expectation is unchanged (mean over batch).
+            r1_b = max(1, b // 2)
+            l_r1 = r1_lazy * r1_penalty(D, diff_augment(real.float()[:r1_b], augment_policy), gamma=r1_gamma)
             l_r1.backward()
             last_r1 = float(l_r1.item()) / r1_lazy
 
