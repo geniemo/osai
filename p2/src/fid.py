@@ -29,21 +29,34 @@ def dump_samples(G, n_samples: int, z_dim: int, out_dir: Path,
 
 
 def compute_fid_against_stats(samples_dir: Path, stats_path: Path) -> float:
-    """Run pytorch-fid CLI to compute FID(samples_dir, stats_path)."""
+    """Run pytorch-fid CLI to compute FID(samples_dir, stats_path).
+
+    Raises RuntimeError with full stdout+stderr if pytorch-fid exits non-zero
+    or if FID line is missing (helps debug "subprocess returned 1" silently).
+    """
     result = subprocess.run(
         ["python", "-m", "pytorch_fid", str(samples_dir), str(stats_path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True,
     )
-    # pytorch-fid prints "FID:  XXX.XXX"
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pytorch-fid exited {result.returncode}\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
     for line in result.stdout.splitlines():
         if line.startswith("FID:"):
             return float(line.split()[1])
-    raise RuntimeError(f"FID parse failed: {result.stdout}")
+    raise RuntimeError(f"FID parse failed:\n{result.stdout}")
 
 
 def build_stats_cache(real_dir: Path, stats_path: Path) -> None:
-    """Cache Inception stats for real images (run once)."""
+    """Cache Inception stats for real images (run once).
+
+    pytorch-fid CLI quirk: --save-stats must come *after* both positional
+    paths. The form `python -m pytorch_fid <dir> --save-stats <stats>` errors
+    with 'the following arguments are required: path'.
+    """
     subprocess.run(
-        ["python", "-m", "pytorch_fid", str(real_dir), "--save-stats", str(stats_path)],
+        ["python", "-m", "pytorch_fid", str(real_dir), str(stats_path), "--save-stats"],
         check=True,
     )
