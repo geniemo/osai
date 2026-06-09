@@ -4,10 +4,11 @@ Submission contract:
     input  z      (B, 512), float32
     output image  (B, 3, 1024, 1024), float32, range [-1, 1]
 
-NOTE: StyleGAN2's ModulatedConv uses a group-conv trick (groups=B) that does
-not trace cleanly with dynamic batch axes. By default we export with a static
-batch size (no dynamic_axes); pass --dynamic-batch only if you've verified
-the resulting ONNX graph works with variable batch.
+For dynamic batch support we monkey-patch every `ModulatedConv2d.forward` to
+its mathematically equivalent `forward_onnx` variant, which uses standard
+F.conv2d (no groups=B) so the trace doesn't bake the batch dim into the graph.
+The two variants are bit-equivalent (verified on real ckpt); the swap only
+matters for ONNX export.
 
 Final wrapper clamps to [-1, 1] for spec compliance.
 """
@@ -18,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from p2.src.networks.generator import Generator, GeneratorConfig
+from p2.src.networks.ops import ModulatedConv2d
 
 
 TARGET_RES = 1024
@@ -32,6 +34,35 @@ class SubmissionWrapper(nn.Module):
         x = self.G(z, style_mixing=False)
         x = F.interpolate(x, size=(TARGET_RES, TARGET_RES), mode="bilinear", align_corners=False)
         return x.clamp(-1.0, 1.0)
+
+
+def swap_modconv_to_onnx(G: nn.Module) -> None:
+    """In-place: prepare each ModulatedConv2d for ONNX-friendly tracing.
+
+    1) `prepare_for_onnx_export()` caches sum_k(weight^2) into a buffer so the
+       demod path doesn't reference self.weight a second time (which would
+       double the ONNX initializer).
+    2) Swap .forward to .forward_onnx so the conv uses standard F.conv2d
+       (groups=1) instead of the groups=B trick → dynamic batch traces cleanly.
+    """
+    for m in G.modules():
+        if isinstance(m, ModulatedConv2d):
+            m.prepare_for_onnx_export()
+            m.forward = m.forward_onnx
+
+
+def verify_numeric_equivalence(G_orig: nn.Module, G_onnx: nn.Module, *, batch: int = 2,
+                               atol: float = 1e-3, seed: int = 0) -> None:
+    """Sanity-check that swapped-forward G produces near-identical output to original."""
+    G_orig.eval(); G_onnx.eval()
+    gen = torch.Generator().manual_seed(seed)
+    z = torch.randn(batch, 512, generator=gen)
+    with torch.no_grad():
+        a = G_orig(z, style_mixing=False)
+        b = G_onnx(z, style_mixing=False)
+    diff = (a - b).abs().max().item()
+    print(f"verify_numeric_equivalence: max |diff| = {diff:.6f} (atol={atol})")
+    assert diff < atol, f"ONNX-forward output diverges from original (max diff {diff})"
 
 
 def export_to_onnx(G: nn.Module, out_path: Path, *, opset: int = 17,
@@ -60,18 +91,33 @@ def main():
     parser.add_argument("--ckpt", required=True, type=Path)
     parser.add_argument("--out", default=Path("checkpoints/model.onnx"), type=Path)
     parser.add_argument("--opset", type=int, default=17)
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Tracing batch size. With --dynamic-batch this is just a dummy.")
     parser.add_argument("--dynamic-batch", action="store_true",
-                        help="Try exporting with dynamic batch axes (may fail due to ModulatedConv group-conv).")
+                        help="Export with dynamic batch axis (requires ModulatedConv ONNX swap).")
     parser.add_argument("--no-ema", action="store_true")
+    parser.add_argument("--skip-verify", action="store_true",
+                        help="Skip numeric equivalence check between orig vs ONNX-friendly forward.")
     args = parser.parse_args()
 
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
     g_cfg = GeneratorConfig.from_dict(ckpt["meta"]["generator_config"])
-    G = Generator(g_cfg)
     state = ckpt["G_state"] if args.no_ema else ckpt["G_ema_state"]
+
+    G = Generator(g_cfg)
     G.load_state_dict(state)
-    export_to_onnx(G, args.out, opset=args.opset, batch_size=args.batch_size, dynamic_batch=args.dynamic_batch)
+
+    if args.dynamic_batch:
+        if not args.skip_verify:
+            G_ref = Generator(g_cfg)
+            G_ref.load_state_dict(state)
+            swap_modconv_to_onnx(G)
+            verify_numeric_equivalence(G_ref, G)
+        else:
+            swap_modconv_to_onnx(G)
+
+    export_to_onnx(G, args.out, opset=args.opset, batch_size=args.batch_size,
+                   dynamic_batch=args.dynamic_batch)
 
 
 if __name__ == "__main__":

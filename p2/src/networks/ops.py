@@ -62,6 +62,9 @@ class ModulatedConv2d(nn.Module):
         self.runtime_scale = 1.0 / math.sqrt(in_ch * kernel * kernel)
         # affine projection from style w → per-input-channel scale
         self.affine = EqualLinear(style_dim, in_ch, bias=True, bias_init=1.0)
+        # _w_var_cache: registered as a buffer (None by default), populated by
+        # prepare_for_onnx_export() before ONNX trace
+        self.register_buffer("_w_var_cache", None, persistent=False)
 
     def forward(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -83,6 +86,48 @@ class ModulatedConv2d(nn.Module):
         x = F.conv2d(x, weight, padding=self.padding, groups=B)
         x = x.view(B, self.out_ch, H_out, W_out)
         return x
+
+    def forward_onnx(self, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """Mathematically equivalent forward without the groups=B trick.
+
+        Reformulation: apply `runtime_scale` to `style` (input side) instead of
+        to `weight`, and read the demod-side `sum_k weight^2` from a buffer
+        (`_w_var_cache`) populated by `prepare_for_onnx_export()`. With this:
+          - `self.weight` is referenced exactly once (the conv), so ONNX
+            exporter emits it as a single initializer instead of duplicating.
+          - `_w_var_cache` is a small (out, in) buffer — much smaller than
+            the full weight tensor.
+
+        Identity used for the conv:
+            conv(input * (rs * style[i]), weight)
+              == conv(input, weight * rs * style[i])         (linearity in i)
+              == per-sample-modulated conv  (original group-conv trick output)
+        """
+        assert self._w_var_cache is not None, (
+            "Call prepare_for_onnx_export() before using forward_onnx() "
+            "(needed to dedup self.weight in the ONNX graph)."
+        )
+        B, C, H, W = x.shape
+        style_scaled = self.affine(w) * self.runtime_scale  # (B, in_ch)
+
+        x_in = x * style_scaled.view(B, C, 1, 1)
+        if self.up:
+            x_in = F.interpolate(x_in, scale_factor=2, mode="bilinear", align_corners=False)
+        x_out = F.conv2d(x_in, self.weight, padding=self.padding)
+
+        if self.demodulate:
+            style_sq = style_scaled.square()                                       # (B, in)
+            per_out = (style_sq.unsqueeze(1) * self._w_var_cache.unsqueeze(0)).sum(dim=2)
+            d = torch.rsqrt(per_out + 1e-8)
+            x_out = x_out * d.view(B, self.out_ch, 1, 1)
+
+        return x_out
+
+    def prepare_for_onnx_export(self) -> None:
+        """Cache `sum_k weight^2` in the existing buffer so forward_onnx can
+        reference self.weight exactly once (avoids ONNX initializer duplication)."""
+        with torch.no_grad():
+            self._w_var_cache = self.weight.square().sum(dim=[2, 3]).detach()  # (out, in)
 
 
 class AddNoise(nn.Module):
