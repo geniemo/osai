@@ -53,12 +53,20 @@ def swap_modconv_to_onnx(G: nn.Module) -> None:
 
 def verify_numeric_equivalence(G_orig: nn.Module, G_onnx: nn.Module, *, batch: int = 2,
                                atol: float = 1e-3, seed: int = 0) -> None:
-    """Sanity-check that swapped-forward G produces near-identical output to original."""
+    """Sanity-check that swapped-forward G produces near-identical output to original.
+
+    AddNoise.forward(noise=None) draws fresh torch.randn each call. Without resetting
+    the global RNG between the two forwards, G_orig and G_onnx consume different noise
+    streams → spurious diff that grows as AddNoise.weight learns away from zero.
+    Reset before each call so both consume the same noise.
+    """
     G_orig.eval(); G_onnx.eval()
     gen = torch.Generator().manual_seed(seed)
     z = torch.randn(batch, 512, generator=gen)
     with torch.no_grad():
+        torch.manual_seed(seed)
         a = G_orig(z, style_mixing=False)
+        torch.manual_seed(seed)
         b = G_onnx(z, style_mixing=False)
     diff = (a - b).abs().max().item()
     print(f"verify_numeric_equivalence: max |diff| = {diff:.6f} (atol={atol})")
